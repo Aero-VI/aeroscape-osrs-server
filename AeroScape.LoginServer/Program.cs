@@ -14,7 +14,11 @@ class Program
     {
         Console.WriteLine($"[{DateTime.UtcNow:u}] AeroScape Login Server starting on port {Port}...");
 
+        // Initialise RSA keys (load from disk or generate new)
+        RsaKeys.Initialize();
+
         var listener = new TcpListener(IPAddress.Any, Port);
+        listener.Server.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.NoDelay, true);
         listener.Start();
 
         Console.WriteLine($"[{DateTime.UtcNow:u}] Server listening on 0.0.0.0:{Port}");
@@ -41,50 +45,32 @@ class Program
                     break;
                 }
 
+                // Disable Nagle algorithm for low-latency login packets
+                client.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.NoDelay, true);
+
                 var remoteEndpoint = client.Client.RemoteEndPoint?.ToString() ?? "unknown";
                 Console.WriteLine($"[{DateTime.UtcNow:u}] Client connected: {remoteEndpoint}");
 
-                _ = Task.Run(() => HandleClientAsync(client, remoteEndpoint, cts.Token), cts.Token);
+                // Handle each client in its own task
+                _ = Task.Run(async () =>
+                {
+                    var handler = new LoginHandler(client, remoteEndpoint, cts.Token);
+                    try
+                    {
+                        await handler.HandleAsync();
+                    }
+                    finally
+                    {
+                        client.Dispose();
+                        Console.WriteLine($"[{DateTime.UtcNow:u}] Client disconnected: {remoteEndpoint}");
+                    }
+                }, cts.Token);
             }
         }
         finally
         {
             listener.Stop();
             Console.WriteLine($"[{DateTime.UtcNow:u}] Server stopped.");
-        }
-    }
-
-    private static async Task HandleClientAsync(TcpClient client, string remoteEndpoint, CancellationToken ct)
-    {
-        try
-        {
-            using (client)
-            {
-                var stream = client.GetStream();
-                var buffer = new byte[4096];
-
-                while (!ct.IsCancellationRequested && client.Connected)
-                {
-                    int bytesRead;
-                    try
-                    {
-                        bytesRead = await stream.ReadAsync(buffer, ct);
-                    }
-                    catch (Exception)
-                    {
-                        break;
-                    }
-
-                    if (bytesRead == 0)
-                        break;
-
-                    // TODO: Process incoming packet data
-                }
-            }
-        }
-        finally
-        {
-            Console.WriteLine($"[{DateTime.UtcNow:u}] Client disconnected: {remoteEndpoint}");
         }
     }
 }
