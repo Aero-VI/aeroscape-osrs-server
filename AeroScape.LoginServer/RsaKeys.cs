@@ -31,7 +31,7 @@ public static class RsaKeys
     /// </summary>
     public static void Initialize()
     {
-        _rsa = RSA.Create(1024);
+        _rsa = RSA.Create(512);
 
         if (File.Exists(KeyFile))
         {
@@ -44,7 +44,7 @@ public static class RsaKeys
             catch (Exception ex)
             {
                 Console.WriteLine($"[RSA] Failed to load key ({ex.Message}), generating new one.");
-                _rsa = RSA.Create(1024);
+                _rsa = RSA.Create(512);
                 SaveKey();
             }
         }
