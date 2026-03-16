@@ -317,54 +317,24 @@ public sealed class Js5Handler
     /// </summary>
     private static byte[] BuildResponse(int index, int archive, byte[] container, bool prefetch)
     {
-        if (container.Length < 1)
-            return new byte[] { (byte)index, (byte)(archive >> 8), (byte)(archive & 0xFF), 0x00 };
-
-        // Extract the compression type byte from the container and set prefetch bit
-        byte compressionByte = container[0];
-        if (prefetch)
-        {
-            compressionByte |= 0x80;
-        }
-
-        // Remaining container data (everything after the compression byte)
-        int dataLen = container.Length - 1;
-
-        // Calculate number of 0xFF separators needed
-        // First block: 4 header bytes + 508 data bytes = 512 wire bytes
-        // Subsequent blocks: 1 (0xFF) + 511 data bytes = 512 wire bytes
-        int separators;
-        if (dataLen <= 508)
-        {
-            separators = 0;
-        }
-        else
-        {
-            separators = 1 + (dataLen - 509) / 511;
-        }
-
-        int totalSize = 4 + dataLen + separators;
+        // Simple 3-byte header + full container with 0xFF separators every 512 bytes
+        int firstChunk = Math.Min(509, container.Length);
+        int remaining = container.Length - firstChunk;
+        int separators = remaining <= 0 ? 0 : 1 + (remaining - 1) / 511;
+        int totalSize = 3 + container.Length + separators;
         byte[] response = new byte[totalSize];
         int outPos = 0;
 
-        // Write 4-byte header
         response[outPos++] = (byte)index;
         response[outPos++] = (byte)(archive >> 8);
         response[outPos++] = (byte)(archive & 0xFF);
-        response[outPos++] = compressionByte;
 
-        int containerPos = 1; // skip compression byte (already written to header)
+        int containerPos = 0;
+        int firstBlock = Math.Min(509, container.Length);
+        Array.Copy(container, containerPos, response, outPos, firstBlock);
+        outPos += firstBlock;
+        containerPos += firstBlock;
 
-        // First block: up to 508 bytes of container data
-        int firstChunk = Math.Min(508, dataLen);
-        if (firstChunk > 0)
-        {
-            Array.Copy(container, containerPos, response, outPos, firstChunk);
-            outPos += firstChunk;
-            containerPos += firstChunk;
-        }
-
-        // Subsequent blocks: 0xFF separator + up to 511 bytes of container data
         while (containerPos < container.Length)
         {
             response[outPos++] = 0xFF;
