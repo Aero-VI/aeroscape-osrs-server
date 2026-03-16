@@ -1,0 +1,24 @@
+title=AeroScape
+codebase=http://51.79.134.185/
+cachedir=aeroscape
+storebase=0
+initial_jar=aeroscape-client.jar
+initial_class=client.class
+viewerversion=124
+win_sub_version=1
+mac_sub_version=2
+other_sub_version=2
+window_preferredwidth=800
+window_preferredheight=600
+applet_minwidth=765
+applet_minheight=503
+applet_maxwidth=5760
+applet_maxheight=2160
+msg=lang0=English
+msg=loading_app=Loading application
+msg=ok=OK
+msg=cancel=Cancel
+param=server=51.79.134.185
+param=port=43594
+param=13=51.79.134.185
+param=17=http://51.79.134.185/worldlist.ws
