@@ -28,7 +28,7 @@ namespace AeroScape.LoginServer;
 /// </summary>
 public sealed class Js5Handler
 {
-    private const string CachePath = "/home/cache/rev236/cache";
+    private const string CachePath = "/home/cache/rev235/cache";
     private const string Dat2File  = CachePath + "/main_file_cache.dat2";
 
     // --- AEROSCAPE START ---
