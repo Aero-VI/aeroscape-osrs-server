@@ -114,8 +114,7 @@ public sealed class LoginHandler
             //   clientType    (1 byte, g1)
             //   platformType  (1 byte, g1)
             //   extAuthType   (1 byte, g1)
-            //   rsaBlockSize  (2 bytes, g2)
-            //   [rsaBlock ... rsaBlockSize bytes]
+            //   [rsaBlock ... N bytes, where N = RSA key size in bytes (512-bit key = 64 bytes)]
             //   [xteaBlock ... remaining bytes]
 
             byte loginType = await ReadByteAsync(stream);
@@ -143,18 +142,11 @@ public sealed class LoginHandler
                 return;
             }
 
-            // RSA block size
-            int rsaBlockSize = await ReadUShortAsync(stream);
-            Console.WriteLine($"[{_remoteEndpoint}] rsaBlockSize={rsaBlockSize}");
+            // RSA block size is determined by the server key size (no size prefix in rev 236)
+            int rsaBlockSize = RsaKeys.Modulus.GetByteCount(isUnsigned: true);
+            Console.WriteLine($"[{_remoteEndpoint}] rsaBlockSize={rsaBlockSize} (from RSA key)");
 
             // ── Phase 4: RSA block ─────────────────────────────────────────────────
-            if (rsaBlockSize <= 0 || rsaBlockSize > 512)
-            {
-                Console.WriteLine($"[{_remoteEndpoint}] Invalid RSA block size {rsaBlockSize}.");
-                await SendByteAsync(stream, ResponseMalformed);
-                return;
-            }
-
             byte[] rsaBytes = await ReadBytesAsync(stream, rsaBlockSize);
             byte[] plaintext;
 
@@ -261,8 +253,8 @@ public sealed class LoginHandler
 
             // ── Phase 5: XTEA-encrypted remainder ─────────────────────────────────
             // payloadSize covers everything after the u16 payload-size field.
-            // Consumed: 4 (revision) + 4 (subVersion) + 1 (clientType) + 1 (platformType) + 1 (extAuthType) + 2 (rsaBlockSize) + rsaBlockSize
-            int headerConsumed = 4 + 4 + 1 + 1 + 1 + 2 + rsaBlockSize;
+            // Consumed: 4 (revision) + 4 (subVersion) + 1 (clientType) + 1 (platformType) + 1 (extAuthType) + rsaBlockSize
+            int headerConsumed = 4 + 4 + 1 + 1 + 1 + rsaBlockSize;
             int xteaLen = payloadSize - headerConsumed;
 
             Console.WriteLine($"[{_remoteEndpoint}] XTEA block: payloadSize={payloadSize} headerConsumed={headerConsumed} xteaLen={xteaLen}");
