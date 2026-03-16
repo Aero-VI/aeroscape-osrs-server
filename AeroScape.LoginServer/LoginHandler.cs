@@ -10,11 +10,11 @@ namespace AeroScape.LoginServer;
 /// <summary>
 /// OSRS-compatible login protocol handler (rev 236).
 ///
-/// Implements the full OSRS login handshake:
+/// Implements the full OSRS login handshake based on RSProt rev 229+ protocol:
 ///   Phase 1  — Service selector (handshake opcode)
 ///   Phase 2  — Server hello (server seed)
-///   Phase 3  — Login request header (login type + payload size + revision + RSA block)
-///   Phase 4  — RSA-encrypted login block (ISAAC seeds + credentials)
+///   Phase 3  — Login request header (login type + payload size + revision + sub fields + RSA block)
+///   Phase 4  — RSA-encrypted login block (ISAAC seeds + session + OTP + credentials)
 ///   Phase 5  — XTEA-encrypted remainder block (username, display, machine info, CRCs)
 ///   Phase 6  — Server login response
 ///   Phase 7  — ISAAC cipher initialisation
@@ -34,8 +34,8 @@ public sealed class LoginHandler
     private const byte LoginTypeNew       = 16;
     private const byte LoginTypeReconnect = 18;
 
-    // RSA block magic byte
-    private const byte RsaMagic = 0x0A;
+    // RSA block magic byte (RSProt uses 1, not 0x0A)
+    private const byte RsaMagic = 1;
 
     // Response codes
     private const byte ResponseSuccess    = 2;
@@ -44,6 +44,16 @@ public sealed class LoginHandler
 
     // Player rights for accepted logins (player = 0)
     private const byte PlayerRights = 0;
+
+    // OTP authentication types
+    private const byte OtpToken  = 0; // trusted computer
+    private const byte OtpRemember = 1; // trusted authenticator
+    private const byte OtpNone   = 2; // no MFA
+    private const byte OtpForget = 3; // untrusted
+
+    // Password authentication types
+    private const byte PasswordAuth = 0;
+    private const byte TokenAuth    = 2;
 
     // Static player index counter
     private static int _nextPlayerIndex = 1;
@@ -96,10 +106,18 @@ public sealed class LoginHandler
             await stream.FlushAsync(_ct);
 
             // ── Phase 3: Login request header ─────────────────────────────────────
-            // Rev 236 format: [loginType:1][payloadSize:2][revision:4][rsaBlockSize:2][rsaBlock][xteaBlock]
-            // NOTE: Rev 236 does NOT send subVersion or clientType between revision and rsaBlockSize.
-            // This was the bug in the rev 235 handler — those 5 extra bytes shifted the RSA block
-            // size read to the wrong position, causing rsaLen=0.
+            // Rev 236 format (from RSProt LoginBlockDecoder):
+            //   loginType     (1 byte)  — already read above for routing
+            //   payloadSize   (2 bytes, big-endian)
+            //   revision      (4 bytes, g4)
+            //   subVersion    (4 bytes, g4)
+            //   clientType    (1 byte, g1)
+            //   platformType  (1 byte, g1)
+            //   extAuthType   (1 byte, g1)
+            //   rsaBlockSize  (2 bytes, g2)
+            //   [rsaBlock ... rsaBlockSize bytes]
+            //   [xteaBlock ... remaining bytes]
+
             byte loginType = await ReadByteAsync(stream);
             if (loginType != LoginTypeNew && loginType != LoginTypeReconnect)
             {
@@ -109,8 +127,13 @@ public sealed class LoginHandler
 
             int payloadSize    = await ReadUShortAsync(stream);
             int clientRevision = await ReadIntAsync(stream);
+            int subVersion     = await ReadIntAsync(stream);
+            byte clientType    = await ReadByteAsync(stream);
+            byte platformType  = await ReadByteAsync(stream);
+            byte extAuthType   = await ReadByteAsync(stream);
 
             Console.WriteLine($"[{_remoteEndpoint}] Login type={loginType} payloadSize={payloadSize} revision={clientRevision}");
+            Console.WriteLine($"[{_remoteEndpoint}] subVersion={subVersion} clientType={clientType} platformType={platformType} extAuthType={extAuthType}");
 
             // Revision check (skip if ExpectedRevision == 0)
             if (ExpectedRevision != 0 && clientRevision != ExpectedRevision)
@@ -120,7 +143,7 @@ public sealed class LoginHandler
                 return;
             }
 
-            // RSA block size — immediately after revision
+            // RSA block size
             int rsaBlockSize = await ReadUShortAsync(stream);
             Console.WriteLine($"[{_remoteEndpoint}] rsaBlockSize={rsaBlockSize}");
 
@@ -153,13 +176,15 @@ public sealed class LoginHandler
             if (plaintext.Length > 0 && plaintext[0] == 0x00)
                 pos = 1;
 
+            // RSA magic check — RSProt uses 1 (not 0x0A)
             if (pos >= plaintext.Length || plaintext[pos] != RsaMagic)
             {
-                Console.WriteLine($"[{_remoteEndpoint}] RSA magic byte mismatch (got {(pos < plaintext.Length ? plaintext[pos] : -1):X2}).");
+                Console.WriteLine($"[{_remoteEndpoint}] RSA magic byte mismatch (got 0x{(pos < plaintext.Length ? plaintext[pos] : -1):X2}, expected 0x{RsaMagic:X2}).");
                 await SendByteAsync(stream, ResponseMalformed);
                 return;
             }
             pos++;
+            Console.WriteLine($"[{_remoteEndpoint}] RSA magic OK");
 
             // 4 x i32 ISAAC seeds
             if (pos + 16 > plaintext.Length)
@@ -175,46 +200,72 @@ public sealed class LoginHandler
                 isaacSeeds[i] = ReadBigEndianInt(plaintext, pos);
                 pos += 4;
             }
+            Console.WriteLine($"[{_remoteEndpoint}] ISAAC seeds: [{isaacSeeds[0]:X8}, {isaacSeeds[1]:X8}, {isaacSeeds[2]:X8}, {isaacSeeds[3]:X8}]");
 
-            // Auth type byte — indicates login auth method
-            // 0 = no auth, 1 = authenticator, 2 = regular password, 3 = trusted device
-            byte authType = 0;
-            if (pos < plaintext.Length)
+            // Session ID (8 bytes / long) — from RSProt: sessionId = rsaBuffer.g8()
+            if (pos + 8 > plaintext.Length)
             {
-                authType = plaintext[pos++];
-                Console.WriteLine($"[{_remoteEndpoint}] Auth type: {authType}");
+                Console.WriteLine($"[{_remoteEndpoint}] RSA block too short for session ID.");
+                await SendByteAsync(stream, ResponseMalformed);
+                return;
             }
+            long sessionId = ReadBigEndianLong(plaintext, pos);
+            pos += 8;
+            Console.WriteLine($"[{_remoteEndpoint}] sessionId={sessionId}");
 
-            // Handle different auth types - skip variable-length auth data
-            if (authType == 2)
+            // OTP authentication — from RSProt: decodeOtpAuthentication
+            if (pos >= plaintext.Length)
             {
-                // Regular login — skip 8 bytes (UID/empty long)
-                if (pos + 8 <= plaintext.Length)
-                    pos += 8;
-            }
-            else if (authType == 1 || authType == 3)
-            {
-                // Authenticator/trusted — skip 4 bytes (auth code)
-                if (pos + 4 <= plaintext.Length)
-                    pos += 4;
-            }
-            else if (authType == 0)
-            {
-                // No auth — skip 4 bytes
-                if (pos + 4 <= plaintext.Length)
-                    pos += 4;
+                Console.WriteLine($"[{_remoteEndpoint}] RSA block too short for OTP type.");
+                await SendByteAsync(stream, ResponseMalformed);
+                return;
             }
 
-            // Password (null-terminated ASCII)
+            byte otpType = plaintext[pos++];
+            Console.WriteLine($"[{_remoteEndpoint}] OTP type: {otpType}");
+
+            switch (otpType)
+            {
+                case OtpToken: // trusted computer — 4 bytes identifier
+                    if (pos + 4 <= plaintext.Length) pos += 4;
+                    break;
+                case OtpRemember: // trusted authenticator — 3 bytes key + 1 skip
+                    if (pos + 4 <= plaintext.Length) pos += 4;
+                    break;
+                case OtpNone: // no MFA — skip 4 bytes
+                    if (pos + 4 <= plaintext.Length) pos += 4;
+                    break;
+                case OtpForget: // untrusted — 3 bytes key + 1 skip
+                    if (pos + 4 <= plaintext.Length) pos += 4;
+                    break;
+                default:
+                    Console.WriteLine($"[{_remoteEndpoint}] Unknown OTP type {otpType}, skipping 4 bytes.");
+                    if (pos + 4 <= plaintext.Length) pos += 4;
+                    break;
+            }
+
+            // Password authentication type — from RSProt: decodeAuthentication
+            if (pos >= plaintext.Length)
+            {
+                Console.WriteLine($"[{_remoteEndpoint}] RSA block too short for auth type.");
+                await SendByteAsync(stream, ResponseMalformed);
+                return;
+            }
+
+            byte authType = plaintext[pos++];
+            Console.WriteLine($"[{_remoteEndpoint}] Auth type: {authType} ({(authType == PasswordAuth ? "password" : authType == TokenAuth ? "token" : "unknown")})");
+
+            // Password or token (null-terminated ASCII string)
             string password = ReadNullTerminatedString(plaintext, ref pos);
-
-            Console.WriteLine($"[{_remoteEndpoint}] RSA block parsed — password length: {password.Length}");
+            Console.WriteLine($"[{_remoteEndpoint}] RSA block parsed — credential length: {password.Length}");
 
             // ── Phase 5: XTEA-encrypted remainder ─────────────────────────────────
             // payloadSize covers everything after the u16 payload-size field.
-            // Consumed: 4 (revision) + 2 (rsa block size) + rsaBlockSize
-            int headerConsumed = 4 + 2 + rsaBlockSize;
+            // Consumed: 4 (revision) + 4 (subVersion) + 1 (clientType) + 1 (platformType) + 1 (extAuthType) + 2 (rsaBlockSize) + rsaBlockSize
+            int headerConsumed = 4 + 4 + 1 + 1 + 1 + 2 + rsaBlockSize;
             int xteaLen = payloadSize - headerConsumed;
+
+            Console.WriteLine($"[{_remoteEndpoint}] XTEA block: payloadSize={payloadSize} headerConsumed={headerConsumed} xteaLen={xteaLen}");
 
             string username = "unknown";
 
@@ -225,23 +276,44 @@ public sealed class LoginHandler
                 {
                     Xtea.Decrypt(xteaBytes, 0, xteaBytes.Length, isaacSeeds);
 
-                    // Parse XTEA block — contains username, display settings, machine info, CRCs
+                    // Parse XTEA block — from RSProt:
+                    //   username (null-terminated string, gjstr)
+                    //   packedClientSettings (1 byte)
+                    //   width (2 bytes)
+                    //   height (2 bytes)
+                    //   uuid (24 bytes)
+                    //   siteSettings (null-terminated string)
+                    //   affiliate (4 bytes)
+                    //   deepLinkCount (1 byte) + deepLinks
+                    //   hostPlatformStats (variable)
+                    //   secondClientType (1 byte)
+                    //   reflectionCheckerConst (4 bytes)
+                    //   CRC values
                     int xp = 0;
 
                     // Username (null-terminated string)
                     username = ReadNullTerminatedString(xteaBytes, ref xp);
                     Console.WriteLine($"[{_remoteEndpoint}] Username: '{username}'");
 
-                    // Display settings
-                    if (xp + 5 <= xteaBytes.Length)
+                    // Packed client settings
+                    if (xp < xteaBytes.Length)
                     {
-                        byte lowMemory  = xteaBytes[xp++];
-                        ushort canvasW  = (ushort)((xteaBytes[xp] << 8) | xteaBytes[xp + 1]); xp += 2;
-                        ushort canvasH  = (ushort)((xteaBytes[xp] << 8) | xteaBytes[xp + 1]); xp += 2;
-                        Console.WriteLine($"[{_remoteEndpoint}] Display lowMem={lowMemory} canvas={canvasW}x{canvasH}");
+                        byte packedSettings = xteaBytes[xp++];
+                        bool lowDetail = (packedSettings & 0x1) != 0;
+                        bool resizable = (packedSettings & 0x2) != 0;
+                        Console.WriteLine($"[{_remoteEndpoint}] Settings: lowDetail={lowDetail} resizable={resizable}");
                     }
 
-                    // Skip remaining XTEA data (machine info, CRCs, etc.)
+                    // Canvas dimensions
+                    if (xp + 4 <= xteaBytes.Length)
+                    {
+                        ushort canvasW = (ushort)((xteaBytes[xp] << 8) | xteaBytes[xp + 1]); xp += 2;
+                        ushort canvasH = (ushort)((xteaBytes[xp] << 8) | xteaBytes[xp + 1]); xp += 2;
+                        Console.WriteLine($"[{_remoteEndpoint}] Canvas: {canvasW}x{canvasH}");
+                    }
+
+                    // Skip remaining XTEA data (uuid, siteSettings, machine info, CRCs, etc.)
+                    Console.WriteLine($"[{_remoteEndpoint}] XTEA block parsed (remaining {xteaBytes.Length - xp} bytes skipped)");
                 }
                 catch (Exception ex)
                 {
