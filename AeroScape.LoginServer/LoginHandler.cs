@@ -8,14 +8,14 @@ using System.Threading.Tasks;
 namespace AeroScape.LoginServer;
 
 /// <summary>
-/// OSRS-compatible login protocol handler.
+/// OSRS-compatible login protocol handler (rev 236).
 ///
 /// Implements the full OSRS login handshake:
 ///   Phase 1  — Service selector (handshake opcode)
 ///   Phase 2  — Server hello (server seed)
-///   Phase 3  — Login request header
-///   Phase 4  — RSA-encrypted login block (credentials + ISAAC seeds)
-///   Phase 5  — XTEA-encrypted remainder block (client metadata)
+///   Phase 3  — Login request header (login type + payload size + revision + RSA block)
+///   Phase 4  — RSA-encrypted login block (ISAAC seeds + credentials)
+///   Phase 5  — XTEA-encrypted remainder block (username, display, machine info, CRCs)
 ///   Phase 6  — Server login response
 ///   Phase 7  — ISAAC cipher initialisation
 ///
@@ -23,7 +23,7 @@ namespace AeroScape.LoginServer;
 /// </summary>
 public sealed class LoginHandler
 {
-    // Expected client revision — set to 0 to skip revision check in Phase 1
+    // Expected client revision — set to 0 to skip revision check
     private const int ExpectedRevision = 0;
 
     // Service selector opcodes
@@ -45,7 +45,7 @@ public sealed class LoginHandler
     // Player rights for accepted logins (player = 0)
     private const byte PlayerRights = 0;
 
-    // Static player index counter — a real server would use a pool; this is fine for Phase 1
+    // Static player index counter
     private static int _nextPlayerIndex = 1;
 
     private readonly TcpClient _client;
@@ -86,10 +86,6 @@ public sealed class LoginHandler
             }
 
             // ── Phase 2: Server hello (0x00 + 8-byte seed) ────────────────────────
-            // NOTE: Unlike JS5 (opcode 15), the login service (opcode 14) does NOT
-            // send a 4-byte revision after the opcode. The client sends only the
-            // 1-byte service selector, then waits for the server hello. The revision
-            // is sent later inside the login request header (Phase 3).
             long serverSeed = GenerateServerSeed();
             Console.WriteLine($"[{_remoteEndpoint}] Sending server seed: {serverSeed}");
 
@@ -100,6 +96,10 @@ public sealed class LoginHandler
             await stream.FlushAsync(_ct);
 
             // ── Phase 3: Login request header ─────────────────────────────────────
+            // Rev 236 format: [loginType:1][payloadSize:2][revision:4][rsaBlockSize:2][rsaBlock][xteaBlock]
+            // NOTE: Rev 236 does NOT send subVersion or clientType between revision and rsaBlockSize.
+            // This was the bug in the rev 235 handler — those 5 extra bytes shifted the RSA block
+            // size read to the wrong position, causing rsaLen=0.
             byte loginType = await ReadByteAsync(stream);
             if (loginType != LoginTypeNew && loginType != LoginTypeReconnect)
             {
@@ -107,13 +107,10 @@ public sealed class LoginHandler
                 return;
             }
 
-            int payloadSize     = await ReadUShortAsync(stream);
-            int clientRevision  = await ReadIntAsync(stream);
-            int subVersion      = await ReadIntAsync(stream);
-            byte clientType     = await ReadByteAsync(stream);
-            int rsaBlockSize    = await ReadUShortAsync(stream);
+            int payloadSize    = await ReadUShortAsync(stream);
+            int clientRevision = await ReadIntAsync(stream);
 
-            Console.WriteLine($"[{_remoteEndpoint}] Login type={loginType} revision={clientRevision} rsaLen={rsaBlockSize}");
+            Console.WriteLine($"[{_remoteEndpoint}] Login type={loginType} payloadSize={payloadSize} revision={clientRevision}");
 
             // Revision check (skip if ExpectedRevision == 0)
             if (ExpectedRevision != 0 && clientRevision != ExpectedRevision)
@@ -122,6 +119,10 @@ public sealed class LoginHandler
                 await SendByteAsync(stream, ResponseOutdated);
                 return;
             }
+
+            // RSA block size — immediately after revision
+            int rsaBlockSize = await ReadUShortAsync(stream);
+            Console.WriteLine($"[{_remoteEndpoint}] rsaBlockSize={rsaBlockSize}");
 
             // ── Phase 4: RSA block ─────────────────────────────────────────────────
             if (rsaBlockSize <= 0 || rsaBlockSize > 512)
@@ -160,7 +161,7 @@ public sealed class LoginHandler
             }
             pos++;
 
-            // 4 × i32 ISAAC seeds
+            // 4 x i32 ISAAC seeds
             if (pos + 16 > plaintext.Length)
             {
                 Console.WriteLine($"[{_remoteEndpoint}] RSA block too short for ISAAC seeds.");
@@ -175,44 +176,72 @@ public sealed class LoginHandler
                 pos += 4;
             }
 
-            // UID (i64) — store for logging/anti-cheat
-            if (pos + 8 > plaintext.Length)
+            // Auth type byte — indicates login auth method
+            // 0 = no auth, 1 = authenticator, 2 = regular password, 3 = trusted device
+            byte authType = 0;
+            if (pos < plaintext.Length)
             {
-                Console.WriteLine($"[{_remoteEndpoint}] RSA block too short for UID.");
-                await SendByteAsync(stream, ResponseMalformed);
-                return;
+                authType = plaintext[pos++];
+                Console.WriteLine($"[{_remoteEndpoint}] Auth type: {authType}");
             }
-            long uid = ReadBigEndianLong(plaintext, pos);
-            pos += 8;
 
-            // Username (null-terminated ASCII)
-            string username = ReadNullTerminatedString(plaintext, ref pos);
+            // Handle different auth types - skip variable-length auth data
+            if (authType == 2)
+            {
+                // Regular login — skip 8 bytes (UID/empty long)
+                if (pos + 8 <= plaintext.Length)
+                    pos += 8;
+            }
+            else if (authType == 1 || authType == 3)
+            {
+                // Authenticator/trusted — skip 4 bytes (auth code)
+                if (pos + 4 <= plaintext.Length)
+                    pos += 4;
+            }
+            else if (authType == 0)
+            {
+                // No auth — skip 4 bytes
+                if (pos + 4 <= plaintext.Length)
+                    pos += 4;
+            }
+
             // Password (null-terminated ASCII)
             string password = ReadNullTerminatedString(plaintext, ref pos);
 
-            Console.WriteLine($"[{_remoteEndpoint}] Login attempt — user: '{username}' uid: {uid}");
+            Console.WriteLine($"[{_remoteEndpoint}] RSA block parsed — password length: {password.Length}");
 
             // ── Phase 5: XTEA-encrypted remainder ─────────────────────────────────
-            // Calculate remaining bytes: payloadSize covers everything after the u16 payload-size field.
-            // Bytes consumed from payload: 4 (revision) + 4 (sub-version) + 1 (client type)
-            //                              + 2 (rsa block size) + rsaBlockSize
-            int headerConsumed = 4 + 4 + 1 + 2 + rsaBlockSize;
-            int xteatLen = payloadSize - headerConsumed;
+            // payloadSize covers everything after the u16 payload-size field.
+            // Consumed: 4 (revision) + 2 (rsa block size) + rsaBlockSize
+            int headerConsumed = 4 + 2 + rsaBlockSize;
+            int xteaLen = payloadSize - headerConsumed;
 
-            if (xteatLen > 0)
+            string username = "unknown";
+
+            if (xteaLen > 0)
             {
-                byte[] xteaBytes = await ReadBytesAsync(stream, xteatLen);
+                byte[] xteaBytes = await ReadBytesAsync(stream, xteaLen);
                 try
                 {
                     Xtea.Decrypt(xteaBytes, 0, xteaBytes.Length, isaacSeeds);
-                    // Phase 1: parse display mode / canvas size if desired; currently just logged
-                    if (xteaBytes.Length >= 5)
+
+                    // Parse XTEA block — contains username, display settings, machine info, CRCs
+                    int xp = 0;
+
+                    // Username (null-terminated string)
+                    username = ReadNullTerminatedString(xteaBytes, ref xp);
+                    Console.WriteLine($"[{_remoteEndpoint}] Username: '{username}'");
+
+                    // Display settings
+                    if (xp + 5 <= xteaBytes.Length)
                     {
-                        byte displayMode  = xteaBytes[0];
-                        ushort canvasW    = (ushort)((xteaBytes[1] << 8) | xteaBytes[2]);
-                        ushort canvasH    = (ushort)((xteaBytes[3] << 8) | xteaBytes[4]);
-                        Console.WriteLine($"[{_remoteEndpoint}] Display mode={displayMode} canvas={canvasW}×{canvasH}");
+                        byte lowMemory  = xteaBytes[xp++];
+                        ushort canvasW  = (ushort)((xteaBytes[xp] << 8) | xteaBytes[xp + 1]); xp += 2;
+                        ushort canvasH  = (ushort)((xteaBytes[xp] << 8) | xteaBytes[xp + 1]); xp += 2;
+                        Console.WriteLine($"[{_remoteEndpoint}] Display lowMem={lowMemory} canvas={canvasW}x{canvasH}");
                     }
+
+                    // Skip remaining XTEA data (machine info, CRCs, etc.)
                 }
                 catch (Exception ex)
                 {
@@ -222,9 +251,9 @@ public sealed class LoginHandler
             }
 
             // ── Phase 6: Authentication ────────────────────────────────────────────
-            // Phase 1: Accept any username/password — no credential validation.
+            // Accept any username/password — no credential validation.
             int playerIndex = System.Threading.Interlocked.Increment(ref _nextPlayerIndex) % 2047;
-            if (playerIndex == 0) playerIndex = 1; // index 0 is reserved
+            if (playerIndex == 0) playerIndex = 1;
 
             Console.WriteLine($"[{_remoteEndpoint}] Accepting login for '{username}' at slot {playerIndex}");
 
@@ -253,8 +282,6 @@ public sealed class LoginHandler
             Console.WriteLine($"[{_remoteEndpoint}] ISAAC ciphers initialised for '{username}' (slot {playerIndex})");
 
             // ── Phase 8: Hand off to game traffic loop ─────────────────────────────
-            // Phase 1: We simply echo packets back or wait for disconnect.
-            // A full game server would pass (inCipher, outCipher, playerIndex) to the game world here.
             await GameTrafficLoopAsync(stream, inCipher, outCipher, username, playerIndex);
         }
         catch (OperationCanceledException)
@@ -273,8 +300,6 @@ public sealed class LoginHandler
 
     /// <summary>
     /// Minimal post-login game traffic loop.
-    /// Reads incoming packets, unmasks opcodes with the incoming ISAAC cipher.
-    /// In Phase 1, the loop simply keeps the connection alive until the client disconnects.
     /// </summary>
     private async Task GameTrafficLoopAsync(
         NetworkStream stream,
@@ -301,12 +326,9 @@ public sealed class LoginHandler
             if (bytesRead == 0)
                 break;
 
-            // Unmask the opcode of the first byte of each packet
             int maskedOpcode = buf[0] & 0xFF;
             int rawOpcode    = (maskedOpcode - inCipher.NextInt()) & 0xFF;
             Console.WriteLine($"[{username}:{playerIndex}] Received packet — masked={maskedOpcode:X2} raw={rawOpcode:X2} ({bytesRead} bytes)");
-
-            // Phase 1: no game packet processing beyond opcode unmasking
         }
 
         Console.WriteLine($"[{username}:{playerIndex}] Disconnected.");
