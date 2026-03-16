@@ -148,7 +148,8 @@ public sealed class Js5Handler
                 // master index (255,255) do NOT have version trailers.
                 if (index != 255)
                 {
-                    container = StripVersionTrailer(container, index, archive);
+                    // DISABLED: CRCs in master_index.dat include version trailers
+                    // container = StripVersionTrailer(container, index, archive);
                 }
 
                 if (!(index == 255 && archive == 255))
