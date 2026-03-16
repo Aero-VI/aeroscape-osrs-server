@@ -85,6 +85,13 @@ public sealed class LoginHandler
                 return;
             }
 
+            // ── Phase 1b: Consume the 4-byte revision the client sent with the service opcode ──
+            // Client sends 5 bytes on connect: [serviceOpcode(1)][revision: i32 big-endian (4)]
+            // We already consumed byte 0 (serviceOpcode) above; consume the remaining 4 now.
+            byte[] initRevBytes = await ReadExactAsync(stream, 4);
+            int initRevision = (initRevBytes[0] << 24) | (initRevBytes[1] << 16) | (initRevBytes[2] << 8) | initRevBytes[3];
+            Console.WriteLine($"[{_remoteEndpoint}] Login service — client initial revision: {initRevision}");
+
             // ── Phase 2: Server hello (0x00 + 8-byte seed) ────────────────────────
             long serverSeed = GenerateServerSeed();
             Console.WriteLine($"[{_remoteEndpoint}] Sending server seed: {serverSeed}");
