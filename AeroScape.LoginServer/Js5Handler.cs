@@ -340,15 +340,19 @@ public sealed class Js5Handler
     /// <summary>
     /// Build the JS5 response packet.
     ///
-    /// Format:
-    ///   [index:1][archive>>8:1][archive&0xFF:1]
-    ///   + container bytes with 0xFF separator inserted before every 512-byte boundary
-    ///     (at positions 512, 1024, 1536... relative to the start of container data)
+    /// Format (OSRS JS5 framing — 512-byte OUTPUT STREAM blocks):
+    ///   Block 0: [index:1][arch_hi:1][arch_lo:1][data: up to 509 bytes] = 512 bytes
+    ///   Block N (N>0): [0xFF:1][data: up to 511 bytes] = 512 bytes
+    ///
+    /// Separators are at OUTPUT boundaries, not container-data boundaries.
     /// </summary>
     private static byte[] BuildResponse(int index, int archive, byte[] container)
     {
-        int separators = container.Length / 512;
-        int totalSize  = 3 + container.Length + separators;
+        // OSRS JS5 framing: 512-byte output blocks
+        // Block 0: [index:1][arch_hi:1][arch_lo:1][data:up to 509 bytes]
+        // Block N (N>0): [0xFF:1][data:up to 511 bytes]
+        int separators = container.Length <= 509 ? 0 : 1 + (container.Length - 510) / 511;
+        int totalSize = 3 + container.Length + separators;
         byte[] response = new byte[totalSize];
         int outPos = 0;
 
@@ -357,12 +361,18 @@ public sealed class Js5Handler
         response[outPos++] = (byte)(archive & 0xFF);
 
         int containerPos = 0;
+
+        // First block: up to 509 container bytes (no separator)
+        int firstChunk = Math.Min(509, container.Length);
+        Array.Copy(container, containerPos, response, outPos, firstChunk);
+        outPos += firstChunk;
+        containerPos += firstChunk;
+
+        // Subsequent blocks: 0xFF separator + up to 511 container bytes
         while (containerPos < container.Length)
         {
-            if (containerPos > 0 && containerPos % 512 == 0)
-                response[outPos++] = 0xFF;
-
-            int chunk = Math.Min(512 - (containerPos % 512), container.Length - containerPos);
+            response[outPos++] = 0xFF;
+            int chunk = Math.Min(511, container.Length - containerPos);
             Array.Copy(container, containerPos, response, outPos, chunk);
             outPos += chunk;
             containerPos += chunk;
