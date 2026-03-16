@@ -153,10 +153,11 @@ public sealed class LoginHandler
             byte[] fullPayload = await ReadBytesAsync(stream, remainingPayload);
             Console.WriteLine($"[{_remoteEndpoint}] Full remaining payload ({remainingPayload} bytes): {BitConverter.ToString(fullPayload, 0, Math.Min(100, remainingPayload))}");
 
-            // Probe: try decrypting 64-byte blocks at different offsets
+            // Probe: try decrypting 64-byte blocks at ALL possible offsets
             int foundOffset = -1;
             byte[] plaintext = null!;
-            for (int probe = 0; probe <= Math.Min(20, remainingPayload - rsaBlockSize); probe++)
+            int maxProbe = remainingPayload - rsaBlockSize;
+            for (int probe = 0; probe <= maxProbe; probe++)
             {
                 byte[] candidate = new byte[rsaBlockSize];
                 Array.Copy(fullPayload, probe, candidate, 0, rsaBlockSize);
@@ -166,7 +167,9 @@ public sealed class LoginHandler
                     int p0 = 0;
                     if (dec.Length > 0 && dec[0] == 0x00) p0 = 1;
                     byte magic = p0 < dec.Length ? dec[p0] : (byte)0xFF;
-                    Console.WriteLine($"[{_remoteEndpoint}] Probe offset={probe}: decrypted[{p0}]=0x{magic:X2} (len={dec.Length})");
+                    // Only log every 50th offset to reduce spam, plus first 25
+                    if (probe < 25 || probe % 50 == 0 || magic == 0x01 || magic == 0x0A)
+                        Console.WriteLine($"[{_remoteEndpoint}] Probe offset={probe}: decrypted[{p0}]=0x{magic:X2} (len={dec.Length})");
                     if (magic == 0x01 || magic == 0x0A)
                     {
                         foundOffset = probe;
@@ -177,13 +180,22 @@ public sealed class LoginHandler
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[{_remoteEndpoint}] Probe offset={probe}: decrypt error: {ex.Message}");
+                    if (probe < 5)
+                        Console.WriteLine($"[{_remoteEndpoint}] Probe offset={probe}: decrypt error: {ex.Message}");
                 }
             }
 
             if (foundOffset < 0)
             {
-                Console.WriteLine($"[{_remoteEndpoint}] Could not find valid RSA block at any offset 0-20. Aborting.");
+                // Dump more of the payload for analysis
+                Console.WriteLine($"[{_remoteEndpoint}] Could not find valid RSA block at ANY offset 0-{maxProbe}.");
+                Console.WriteLine($"[{_remoteEndpoint}] This likely means the client is NOT using our RSA key!");
+                Console.WriteLine($"[{_remoteEndpoint}] Full payload hex ({remainingPayload} bytes):");
+                for (int i = 0; i < remainingPayload; i += 64)
+                {
+                    int len = Math.Min(64, remainingPayload - i);
+                    Console.WriteLine($"[{_remoteEndpoint}]   +{i:D3}: {BitConverter.ToString(fullPayload, i, len)}");
+                }
                 await SendByteAsync(stream, ResponseMalformed);
                 return;
             }
