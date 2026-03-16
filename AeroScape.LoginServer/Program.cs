@@ -8,20 +8,14 @@ namespace AeroScape.LoginServer;
 
 class Program
 {
-    private const int Port = 43594;
+    private static readonly int[] Ports = { 43594, 443 };
 
     static async Task Main(string[] args)
     {
-        Console.WriteLine($"[{DateTime.UtcNow:u}] AeroScape Login Server starting on port {Port}...");
+        Console.WriteLine($"[{DateTime.UtcNow:u}] AeroScape Login Server starting on ports {string.Join(", ", Ports)}...");
 
         // Initialise RSA keys (load from disk or generate new)
         RsaKeys.Initialize();
-
-        var listener = new TcpListener(IPAddress.Any, Port);
-        listener.Server.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.NoDelay, true);
-        listener.Start();
-
-        Console.WriteLine($"[{DateTime.UtcNow:u}] Server listening on 0.0.0.0:{Port}");
 
         var cts = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) =>
@@ -31,14 +25,43 @@ class Program
             cts.Cancel();
         };
 
+        var listeners = new TcpListener[Ports.Length];
+        var tasks = new Task[Ports.Length];
+
+        for (int i = 0; i < Ports.Length; i++)
+        {
+            var port = Ports[i];
+            var listener = new TcpListener(IPAddress.Any, port);
+            listener.Server.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.NoDelay, true);
+            listener.Start();
+            listeners[i] = listener;
+            Console.WriteLine($"[{DateTime.UtcNow:u}] Server listening on 0.0.0.0:{port}");
+
+            tasks[i] = AcceptLoop(listener, port, cts.Token);
+        }
+
         try
         {
-            while (!cts.Token.IsCancellationRequested)
+            await Task.WhenAll(tasks);
+        }
+        finally
+        {
+            foreach (var listener in listeners)
+                listener.Stop();
+            Console.WriteLine($"[{DateTime.UtcNow:u}] Server stopped.");
+        }
+    }
+
+    private static async Task AcceptLoop(TcpListener listener, int port, CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
             {
                 TcpClient client;
                 try
                 {
-                    client = await listener.AcceptTcpClientAsync(cts.Token);
+                    client = await listener.AcceptTcpClientAsync(ct);
                 }
                 catch (OperationCanceledException)
                 {
@@ -49,12 +72,12 @@ class Program
                 client.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.NoDelay, true);
 
                 var remoteEndpoint = client.Client.RemoteEndPoint?.ToString() ?? "unknown";
-                Console.WriteLine($"[{DateTime.UtcNow:u}] Client connected: {remoteEndpoint}");
+                Console.WriteLine($"[{DateTime.UtcNow:u}] Client connected on port {port}: {remoteEndpoint}");
 
                 // Handle each client in its own task
                 _ = Task.Run(async () =>
                 {
-                    var handler = new LoginHandler(client, remoteEndpoint, cts.Token);
+                    var handler = new LoginHandler(client, remoteEndpoint, ct);
                     try
                     {
                         await handler.HandleAsync();
@@ -64,13 +87,9 @@ class Program
                         client.Dispose();
                         Console.WriteLine($"[{DateTime.UtcNow:u}] Client disconnected: {remoteEndpoint}");
                     }
-                }, cts.Token);
+                }, ct);
             }
         }
-        finally
-        {
-            listener.Stop();
-            Console.WriteLine($"[{DateTime.UtcNow:u}] Server stopped.");
-        }
+        catch (OperationCanceledException) { }
     }
 }

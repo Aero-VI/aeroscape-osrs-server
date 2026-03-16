@@ -14,8 +14,17 @@ namespace AeroScape.LoginServer;
 ///   Handshake response (server):   0x00 = OK
 ///
 ///   After OK, client sends requests: [priority(1)][index(1)][archive(2)] = 4 bytes each
-///   Server responds per request:
-///     [index(1)][archive_hi(1)][archive_lo(1)] + container_bytes with 0xFF separators every 512 bytes
+///   Server responds per request with JS5-framed container data.
+///
+/// JS5 Response framing (per OpenRS2 Js5ResponseEncoder):
+///   Header:  [index:1][archive_hi:1][archive_lo:1][compression|prefetch_bit:1]
+///   Block 0: [up to 508 bytes of container data (AFTER compression byte)]
+///   Block N: [0xFF:1][up to 511 bytes of container data]
+///
+///   The compression byte is extracted from the container, OR'd with 0x80 if
+///   the request was prefetch (priority=1), then written as the 4th header byte.
+///   This gives 4 + 508 = 512 bytes for the first wire block, then 1 + 511 = 512
+///   for subsequent blocks, with 0xFF separators between blocks.
 ///
 /// Cache structure (OSRS disk store):
 ///   - main_file_cache.dat2   : sector data (each sector = 520 bytes)
@@ -31,11 +40,9 @@ public sealed class Js5Handler
     private const string CachePath = "/home/cache/rev236/cache";
     private const string Dat2File  = CachePath + "/main_file_cache.dat2";
 
-    // --- AEROSCAPE START ---
     // Cached master checksum table - built lazily on first request
     private static byte[]? _masterChecksumTable;
     private static readonly object _masterLock = new object();
-    // --- AEROSCAPE END ---
 
     private readonly TcpClient _client;
     private readonly string    _remoteEndpoint;
@@ -54,9 +61,13 @@ public sealed class Js5Handler
 
         try
         {
-            // Read remaining 4 handshake bytes: revision as big-endian i32
-            byte[] revBytes = await ReadExactAsync(stream, 4);
-            int revision = (revBytes[0] << 24) | (revBytes[1] << 16) | (revBytes[2] << 8) | revBytes[3];
+            // Read JS5 handshake: [revision:4][xteaKey0:4][xteaKey1:4][xteaKey2:4][xteaKey3:4] = 20 bytes
+            // OSRS/RuneLite clients send the full 20-byte handshake after the opcode byte.
+            // The first 4 bytes are the client build/revision.
+            // The next 16 bytes are four 32-bit XTEA keys (typically all zeros).
+            // If we only read 4, the remaining 16 key bytes get misinterpreted as JS5 requests.
+            byte[] handshake = await ReadExactAsync(stream, 20);
+            int revision = (handshake[0] << 24) | (handshake[1] << 16) | (handshake[2] << 8) | handshake[3];
             Console.WriteLine($"[{_remoteEndpoint}] JS5 handshake — client revision: {revision}");
 
             // Always accept — respond 0x00 (OK)
@@ -82,7 +93,6 @@ public sealed class Js5Handler
 
                 byte opcode = requestBuf[0];
 
-                // --- AEROSCAPE START ---
                 // Handle JS5 state notifications (non-cache-request message types)
                 // Type 0/1 = cache request, Type 2/3 = login state, Type 4 = encryption keys
                 if (opcode == 2 || opcode == 3)
@@ -94,9 +104,8 @@ public sealed class Js5Handler
 
                 if (opcode == 4)
                 {
-                    // Encryption key notification: first 3 bytes already read (key1, key2, key3),
-                    // plus 12 more bytes for the remaining 4 XTEA keys (3 bytes each? No — 4 int32 keys = 16 bytes total,
-                    // first 3 bytes are in requestBuf[1..3], read 12 more bytes for remaining)
+                    // Encryption key notification: 3 bytes already in requestBuf[1..3],
+                    // read 12 more bytes for the remaining XTEA key data
                     byte[] xteaRemaining = await ReadExactAsync(stream, 12);
                     Console.WriteLine($"[{_remoteEndpoint}] JS5 encryption keys received (no response)");
                     continue;
@@ -107,20 +116,16 @@ public sealed class Js5Handler
                     Console.WriteLine($"[{_remoteEndpoint}] JS5 unknown opcode {opcode}, skipping");
                     continue;
                 }
-                // --- AEROSCAPE END ---
 
-                byte priority = opcode;
+                bool prefetch = opcode == 1;
                 byte index    = requestBuf[1];
                 int  archive  = (requestBuf[2] << 8) | requestBuf[3];
 
-                Console.WriteLine($"[{_remoteEndpoint}] JS5 request — priority={priority} index={index} archive={archive}");
+                Console.WriteLine($"[{_remoteEndpoint}] JS5 request — prefetch={prefetch} index={index} archive={archive}");
 
                 byte[]? container;
 
-                // --- AEROSCAPE START ---
                 // Special case: index=255, archive=255 = master checksum table
-                // This is not stored in the disk cache but must be computed dynamically
-                // from the CRC32 + version of each sub-index's reference container.
                 if (index == 255 && archive == 255)
                 {
                     container = GetOrBuildMasterChecksumTable();
@@ -130,19 +135,28 @@ public sealed class Js5Handler
                 {
                     container = LoadContainer(index, archive);
                 }
-                // --- AEROSCAPE END ---
 
                 if (container == null || container.Length == 0)
                 {
-                    Console.WriteLine($"[{_remoteEndpoint}] JS5 WARNING: no data for index={index} archive={archive}, sending empty container");
-                    container = Array.Empty<byte>();
+                    Console.WriteLine($"[{_remoteEndpoint}] JS5 WARNING: no data for index={index} archive={archive}, skipping");
+                    continue;
                 }
-                else if (!(index == 255 && archive == 255))
+
+                // Strip 2-byte version trailer from regular archive containers.
+                // Per OpenRS2-667 Js5Service: VersionTrailer.strip() is called when
+                // archive != ARCHIVESET (255). Index headers (archive=255) and the
+                // master index (255,255) do NOT have version trailers.
+                if (index != 255)
+                {
+                    container = StripVersionTrailer(container, index, archive);
+                }
+
+                if (!(index == 255 && archive == 255))
                 {
                     Console.WriteLine($"[{_remoteEndpoint}] JS5 serving index={index} archive={archive} size={container.Length}");
                 }
 
-                byte[] response = BuildResponse(index, archive, container);
+                byte[] response = BuildResponse(index, archive, container, prefetch);
                 await stream.WriteAsync(response, _ct);
                 await stream.FlushAsync(_ct);
             }
@@ -165,7 +179,6 @@ public sealed class Js5Handler
         }
     }
 
-    // --- AEROSCAPE START ---
     /// <summary>
     /// Load the pre-built master checksum table from master_index.dat.
     /// </summary>
@@ -188,10 +201,9 @@ public sealed class Js5Handler
             return _masterChecksumTable;
         }
     }
-    // --- AEROSCAPE END ---
 
     /// <summary>
-    /// Load the raw container bytes for the given (index, archive) request.
+    /// Load the container bytes for the given (index, archive) request.
     ///
     /// OSRS cache disk format:
     ///   Each sector = 520 bytes: [archiveId:2][chunk:2][nextSector:3][indexId:1][data:512]
@@ -199,6 +211,11 @@ public sealed class Js5Handler
     ///
     /// For index=255, archive=N: read from idx255 → dat2 (index header container)
     /// For index=N,   archive=M: read from idxN   → dat2 (archive data container)
+    ///
+    /// IMPORTANT: The disk store appends a 2-byte version trailer to each container.
+    /// The JS5 wire protocol sends ONLY the container data (compression header + payload),
+    /// NOT the version trailer. We must strip it by computing the true container size
+    /// from the compression header.
     /// </summary>
     private static byte[]? LoadContainer(int index, int archive)
     {
@@ -281,35 +298,69 @@ public sealed class Js5Handler
     /// <summary>
     /// Build the JS5 response packet.
     ///
-    /// Format (OSRS JS5 framing — 512-byte OUTPUT STREAM blocks):
-    ///   Block 0: [index:1][arch_hi:1][arch_lo:1][data: up to 509 bytes] = 512 bytes
-    ///   Block N (N>0): [0xFF:1][data: up to 511 bytes] = 512 bytes
+    /// Wire format (per OpenRS2 Js5ResponseEncoder / Js5ResponseDecoder):
     ///
-    /// Separators are at OUTPUT boundaries, not container-data boundaries.
+    ///   The compression byte (container[0]) is extracted from the container data,
+    ///   OR'd with 0x80 if the request was prefetch, and written as a 4th header byte.
+    ///
+    ///   Header:   [index:1][archive_hi:1][archive_lo:1][compression_byte:1] = 4 bytes
+    ///   Block 0:  [up to 508 bytes of remaining container data]
+    ///   Block N:  [0xFF:1][up to 511 bytes of remaining container data]
+    ///
+    ///   First wire segment: 4 + 508 = 512 bytes → then 0xFF
+    ///   Subsequent:         1 + 511 = 512 bytes → then 0xFF
+    ///   (Last block may be shorter, no trailing 0xFF)
     /// </summary>
-    private static byte[] BuildResponse(int index, int archive, byte[] container)
+    private static byte[] BuildResponse(int index, int archive, byte[] container, bool prefetch)
     {
-        // OSRS JS5 framing: 512-byte output blocks
-        // Block 0: [index:1][arch_hi:1][arch_lo:1][data:up to 509 bytes]
-        // Block N (N>0): [0xFF:1][data:up to 511 bytes]
-        int separators = container.Length <= 509 ? 0 : 1 + (container.Length - 510) / 511;
-        int totalSize = 3 + container.Length + separators;
+        if (container.Length < 1)
+            return new byte[] { (byte)index, (byte)(archive >> 8), (byte)(archive & 0xFF), 0x00 };
+
+        // Extract the compression type byte from the container and set prefetch bit
+        byte compressionByte = container[0];
+        if (prefetch)
+        {
+            compressionByte |= 0x80;
+        }
+
+        // Remaining container data (everything after the compression byte)
+        int dataLen = container.Length - 1;
+
+        // Calculate number of 0xFF separators needed
+        // First block: 4 header bytes + 508 data bytes = 512 wire bytes
+        // Subsequent blocks: 1 (0xFF) + 511 data bytes = 512 wire bytes
+        int separators;
+        if (dataLen <= 508)
+        {
+            separators = 0;
+        }
+        else
+        {
+            separators = 1 + (dataLen - 509) / 511;
+        }
+
+        int totalSize = 4 + dataLen + separators;
         byte[] response = new byte[totalSize];
         int outPos = 0;
 
+        // Write 4-byte header
         response[outPos++] = (byte)index;
         response[outPos++] = (byte)(archive >> 8);
         response[outPos++] = (byte)(archive & 0xFF);
+        response[outPos++] = compressionByte;
 
-        int containerPos = 0;
+        int containerPos = 1; // skip compression byte (already written to header)
 
-        // First block: up to 509 container bytes (no separator)
-        int firstChunk = Math.Min(509, container.Length);
-        Array.Copy(container, containerPos, response, outPos, firstChunk);
-        outPos += firstChunk;
-        containerPos += firstChunk;
+        // First block: up to 508 bytes of container data
+        int firstChunk = Math.Min(508, dataLen);
+        if (firstChunk > 0)
+        {
+            Array.Copy(container, containerPos, response, outPos, firstChunk);
+            outPos += firstChunk;
+            containerPos += firstChunk;
+        }
 
-        // Subsequent blocks: 0xFF separator + up to 511 container bytes
+        // Subsequent blocks: 0xFF separator + up to 511 bytes of container data
         while (containerPos < container.Length)
         {
             response[outPos++] = 0xFF;
@@ -320,6 +371,37 @@ public sealed class Js5Handler
         }
 
         return response;
+    }
+
+    /// <summary>
+    /// Strip the 2-byte version trailer from a container read from the disk store.
+    /// The disk store appends [version:2] after the container data. The JS5 wire
+    /// protocol must not include this trailer.
+    ///
+    /// Container format:
+    ///   type=0 (none):  [type:1][len:4][data:len]                     = 5 + len
+    ///   type=1 (bzip2): [type:1][compLen:4][decompLen:4][data:compLen] = 9 + compLen
+    ///   type=2 (gzip):  [type:1][compLen:4][decompLen:4][data:compLen] = 9 + compLen
+    /// </summary>
+    private static byte[] StripVersionTrailer(byte[] container, int index, int archive)
+    {
+        if (container.Length < 5)
+            return container;
+
+        int compType = container[0];
+        int compLen = (container[1] << 24) | (container[2] << 16) | (container[3] << 8) | container[4];
+        int trueSize = compType == 0 ? (5 + compLen) : (9 + compLen);
+
+        if (trueSize > 0 && trueSize < container.Length)
+        {
+            int trailer = container.Length - trueSize;
+            Console.WriteLine($"[JS5] Stripping {trailer}-byte version trailer from idx{index}[{archive}]: {container.Length} → {trueSize}");
+            byte[] trimmed = new byte[trueSize];
+            Array.Copy(container, trimmed, trueSize);
+            return trimmed;
+        }
+
+        return container;
     }
 
     private static async Task<byte[]> ReadExactAsync(NetworkStream stream, int count)
