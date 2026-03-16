@@ -22,13 +22,20 @@ namespace AeroScape.LoginServer;
 ///   - main_file_cache.idxN   : 6 bytes per archive → [size:3][sector:3]
 ///   - main_file_cache.idx255 : meta-index; each entry points to an index-header container
 ///
-/// For request (index=255, archive=N): serve the index-N header container from dat2 via idx255[N]
-/// For request (index=N, archive=M):   serve archive M from index N via idxN[M]
+/// For request (index=255, archive=N):   serve the index-N header container from dat2 via idx255[N]
+/// For request (index=255, archive=255): serve the dynamically-built master checksum table
+/// For request (index=N, archive=M):     serve archive M from index N via idxN[M]
 /// </summary>
 public sealed class Js5Handler
 {
     private const string CachePath = "/home/cache/rev236/cache";
     private const string Dat2File  = CachePath + "/main_file_cache.dat2";
+
+    // --- AEROSCAPE START ---
+    // Cached master checksum table - built lazily on first request
+    private static byte[]? _masterChecksumTable;
+    private static readonly object _masterLock = new object();
+    // --- AEROSCAPE END ---
 
     private readonly TcpClient _client;
     private readonly string    _remoteEndpoint;
@@ -79,20 +86,33 @@ public sealed class Js5Handler
 
                 Console.WriteLine($"[{_remoteEndpoint}] JS5 request — priority={priority} index={index} archive={archive}");
 
-                // Load the raw container bytes from cache
-                byte[]? container = LoadContainer(index, archive);
+                byte[]? container;
+
+                // --- AEROSCAPE START ---
+                // Special case: index=255, archive=255 = master checksum table
+                // This is not stored in the disk cache but must be computed dynamically
+                // from the CRC32 + version of each sub-index's reference container.
+                if (index == 255 && archive == 255)
+                {
+                    container = GetOrBuildMasterChecksumTable();
+                    Console.WriteLine($"[{_remoteEndpoint}] JS5 serving master checksum table: {container?.Length ?? 0} bytes");
+                }
+                else
+                {
+                    container = LoadContainer(index, archive);
+                }
+                // --- AEROSCAPE END ---
 
                 if (container == null || container.Length == 0)
                 {
                     Console.WriteLine($"[{_remoteEndpoint}] JS5 WARNING: no data for index={index} archive={archive}, sending empty container");
                     container = Array.Empty<byte>();
                 }
-                else
+                else if (!(index == 255 && archive == 255))
                 {
                     Console.WriteLine($"[{_remoteEndpoint}] JS5 serving index={index} archive={archive} size={container.Length}");
                 }
 
-                // Build and send the JS5 response
                 byte[] response = BuildResponse(index, archive, container);
                 await stream.WriteAsync(response, _ct);
                 await stream.FlushAsync(_ct);
@@ -116,6 +136,119 @@ public sealed class Js5Handler
         }
     }
 
+    // --- AEROSCAPE START ---
+    /// <summary>
+    /// Build or return the cached master checksum table for index=255, archive=255.
+    ///
+    /// The OSRS master checksum table is NOT stored in idx255 as entry 255.
+    /// It is dynamically constructed from CRC32 checksums and version numbers
+    /// of each sub-index's reference container (index=255, archive=0 to numIndices-1).
+    ///
+    /// Output container format (uncompressed, compression=0):
+    ///   [compression=0 (1 byte)]
+    ///   [uncompressed_length (4 bytes big-endian)]
+    ///   For each sub-index i (0 to numIndices-1):
+    ///     [crc32_of_raw_container (4 bytes big-endian)]
+    ///     [version (4 bytes big-endian)]
+    /// </summary>
+    private static byte[]? GetOrBuildMasterChecksumTable()
+    {
+        if (_masterChecksumTable != null)
+            return _masterChecksumTable;
+
+        lock (_masterLock)
+        {
+            if (_masterChecksumTable != null)
+                return _masterChecksumTable;
+
+            try
+            {
+                string idx255Path = $"{CachePath}/main_file_cache.idx255";
+                if (!File.Exists(idx255Path))
+                {
+                    Console.WriteLine("[JS5] idx255 not found, cannot build master checksum table");
+                    return null;
+                }
+
+                long idx255Length = new FileInfo(idx255Path).Length;
+                int numIndices = (int)(idx255Length / 6); // 6 bytes per entry in idx255
+                Console.WriteLine($"[JS5] Building master checksum table for {numIndices} sub-indices...");
+
+                // Each index entry: [crc32 (4)] + [version (4)] = 8 bytes
+                byte[] table = new byte[numIndices * 8];
+
+                for (int i = 0; i < numIndices; i++)
+                {
+                    byte[]? container = LoadContainer(255, i);
+                    if (container == null || container.Length == 0)
+                    {
+                        Console.WriteLine($"[JS5] Master table: sub-index {i} empty, using crc=0 version=0");
+                        continue;
+                    }
+
+                    // CRC32 of the full raw container bytes as stored on disk
+                    uint crc = ComputeCrc32(container);
+
+                    // Version: the last 4 bytes of the container if it is versioned.
+                    // OSRS containers optionally have a 4-byte version appended after the data.
+                    // We read it from the end unconditionally (0 if unversioned, which is harmless).
+                    int version = 0;
+                    if (container.Length >= 4)
+                    {
+                        int vo = container.Length - 4;
+                        version = (container[vo] << 24) | (container[vo + 1] << 16) |
+                                  (container[vo + 2] << 8) | container[vo + 3];
+                    }
+
+                    int off = i * 8;
+                    table[off]     = (byte)(crc >> 24);
+                    table[off + 1] = (byte)(crc >> 16);
+                    table[off + 2] = (byte)(crc >> 8);
+                    table[off + 3] = (byte)crc;
+                    table[off + 4] = (byte)(version >> 24);
+                    table[off + 5] = (byte)(version >> 16);
+                    table[off + 6] = (byte)(version >> 8);
+                    table[off + 7] = (byte)version;
+                }
+
+                // Wrap table in an uncompressed OSRS container:
+                // [compression=0][length_4_BE][table_bytes]
+                byte[] result = new byte[5 + table.Length];
+                result[0] = 0; // compression = none
+                result[1] = (byte)(table.Length >> 24);
+                result[2] = (byte)(table.Length >> 16);
+                result[3] = (byte)(table.Length >> 8);
+                result[4] = (byte)table.Length;
+                Array.Copy(table, 0, result, 5, table.Length);
+
+                _masterChecksumTable = result;
+                Console.WriteLine($"[JS5] Master checksum table built: {result.Length} bytes ({numIndices} entries)");
+                return _masterChecksumTable;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[JS5] Error building master checksum table: {ex.Message}");
+                return null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// CRC32 using the standard OSRS/ZIP polynomial 0xEDB88320.
+    /// </summary>
+    private static uint ComputeCrc32(byte[] data)
+    {
+        uint crc = 0xFFFFFFFF;
+        foreach (byte b in data)
+        {
+            crc ^= b;
+            for (int j = 0; j < 8; j++)
+                crc = (crc & 1) != 0 ? (crc >> 1) ^ 0xEDB88320 : crc >> 1;
+        }
+        return crc ^ 0xFFFFFFFF;
+    }
+    // --- AEROSCAPE END ---
+
     /// <summary>
     /// Load the raw container bytes for the given (index, archive) request.
     ///
@@ -138,7 +271,6 @@ public sealed class Js5Handler
             return null;
         }
 
-        // Read the 6-byte index entry
         byte[] entry = new byte[6];
         using (var idx = new FileStream(idxFile, FileMode.Open, FileAccess.Read, FileShare.Read))
         {
@@ -169,11 +301,9 @@ public sealed class Js5Handler
             return null;
         }
 
-        // Read sector chain from dat2
         byte[] container = new byte[size];
         int containerPos = 0;
         int currentSector = startSector;
-        int expectedChunk = 0;
 
         using var dat2 = new FileStream(Dat2File, FileMode.Open, FileAccess.Read, FileShare.Read);
 
@@ -188,7 +318,6 @@ public sealed class Js5Handler
 
             dat2.Seek(sectorOffset, SeekOrigin.Begin);
 
-            // Read 8-byte sector header
             byte[] header = new byte[8];
             int hr = dat2.Read(header, 0, 8);
             if (hr < 8)
@@ -196,7 +325,6 @@ public sealed class Js5Handler
 
             int nextSector = (header[4] << 16) | (header[5] << 8) | header[6];
 
-            // Read up to 512 bytes of sector data
             int bytesToRead = Math.Min(512, size - containerPos);
             int bytesRead = dat2.Read(container, containerPos, bytesToRead);
             if (bytesRead <= 0)
@@ -204,7 +332,6 @@ public sealed class Js5Handler
 
             containerPos += bytesRead;
             currentSector = nextSector;
-            expectedChunk++;
         }
 
         return container;
@@ -215,33 +342,25 @@ public sealed class Js5Handler
     ///
     /// Format:
     ///   [index:1][archive>>8:1][archive&0xFF:1]
-    ///   + container bytes, with 0xFF separator byte inserted before every 512th byte
-    ///     (i.e. at output positions 512, 1024, 1536... measured from start of container data)
-    ///
-    /// The 0xFF separator allows the client to detect chunk boundaries in the stream.
+    ///   + container bytes with 0xFF separator inserted before every 512-byte boundary
+    ///     (at positions 512, 1024, 1536... relative to the start of container data)
     /// </summary>
     private static byte[] BuildResponse(int index, int archive, byte[] container)
     {
-        // Calculate total size: 3-byte header + container + separators
-        int separators = container.Length / 512; // one separator after every full 512-byte block
-        int totalSize = 3 + container.Length + separators;
+        int separators = container.Length / 512;
+        int totalSize  = 3 + container.Length + separators;
         byte[] response = new byte[totalSize];
         int outPos = 0;
 
-        // 3-byte header
         response[outPos++] = (byte)index;
         response[outPos++] = (byte)(archive >> 8);
         response[outPos++] = (byte)(archive & 0xFF);
 
-        // Container bytes with 0xFF separators
         int containerPos = 0;
         while (containerPos < container.Length)
         {
-            // Insert 0xFF separator before every 512-byte boundary (except first block)
             if (containerPos > 0 && containerPos % 512 == 0)
-            {
                 response[outPos++] = 0xFF;
-            }
 
             int chunk = Math.Min(512 - (containerPos % 512), container.Length - containerPos);
             Array.Copy(container, containerPos, response, outPos, chunk);
