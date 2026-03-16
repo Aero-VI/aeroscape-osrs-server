@@ -156,7 +156,9 @@ public sealed class Js5Handler
                     Console.WriteLine($"[{_remoteEndpoint}] JS5 serving index={index} archive={archive} size={container.Length}");
                 }
 
-                byte[] response = BuildResponse(index, archive, container, prefetch);
+                // For master checksum table (255,255), NEVER set prefetch bit — it corrupts the compression byte
+                bool usePrefetch = (index == 255 && archive == 255) ? false : prefetch;
+                byte[] response = BuildResponse(index, archive, container, usePrefetch);
                 await stream.WriteAsync(response, _ct);
                 await stream.FlushAsync(_ct);
             }
