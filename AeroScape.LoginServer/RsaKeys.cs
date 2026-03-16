@@ -31,7 +31,7 @@ public static class RsaKeys
     /// </summary>
     public static void Initialize()
     {
-        _rsa = RSA.Create(512);
+        _rsa = RSA.Create(1024);
 
         if (File.Exists(KeyFile))
         {
@@ -44,7 +44,7 @@ public static class RsaKeys
             catch (Exception ex)
             {
                 Console.WriteLine($"[RSA] Failed to load key ({ex.Message}), generating new one.");
-                _rsa = RSA.Create(512);
+                _rsa = RSA.Create(1024);
                 SaveKey();
             }
         }
@@ -63,6 +63,7 @@ public static class RsaKeys
         Console.WriteLine($"[RSA] Modulus (hex, patch into client):");
         Console.WriteLine($"      {Convert.ToHexString(p.Modulus!)}");
         Console.WriteLine($"[RSA] Public exponent: {PublicExp}");
+        Console.WriteLine($"[RSA] Modulus (decimal): {Modulus}");
     }
 
     private static void SaveKey()
