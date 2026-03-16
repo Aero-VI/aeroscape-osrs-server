@@ -73,8 +73,9 @@ public sealed class LoginHandler
 
             if (serviceOpcode == ServiceUpdate)
             {
-                Console.WriteLine($"[{_remoteEndpoint}] Update/JS5 service requested — not implemented.");
-                await SendByteAsync(stream, 0);
+                Console.WriteLine($"[{_remoteEndpoint}] Update/JS5 service requested — handing off to Js5Handler.");
+                var js5 = new Js5Handler(_client, _remoteEndpoint, _ct);
+                await js5.HandleAsync();
                 return;
             }
 
