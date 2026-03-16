@@ -1,0 +1,9 @@
+title=AeroScape
+codebase=http://51.79.134.185/
+cachedir=aeroscape
+storebase=0
+initial_jar=aeroscape-client.jar
+initial_class=client.class
+viewerversion=124
+window_preferredwidth=800
+window_preferredheight=600
