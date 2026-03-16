@@ -186,18 +186,15 @@ public sealed class Js5Handler
                         continue;
                     }
 
-                    // CRC32 of the full raw container bytes as stored on disk
-                    uint crc = ComputeCrc32(container);
+                    // CRC32 of the raw container bytes EXCLUDING the last 2 bytes (version trailer)
+                    uint crc = ComputeCrc32(container[0..^2]);
 
-                    // Version: the last 4 bytes of the container if it is versioned.
-                    // OSRS containers optionally have a 4-byte version appended after the data.
-                    // We read it from the end unconditionally (0 if unversioned, which is harmless).
+                    // Version: the last 2 bytes of the container as a big-endian unsigned short.
+                    // OSRS containers have a 2-byte version/revision trailer at the end.
                     int version = 0;
-                    if (container.Length >= 4)
+                    if (container.Length >= 2)
                     {
-                        int vo = container.Length - 4;
-                        version = (container[vo] << 24) | (container[vo + 1] << 16) |
-                                  (container[vo + 2] << 8) | container[vo + 3];
+                        version = (container[^2] << 8) | container[^1];
                     }
 
                     int off = i * 8;
