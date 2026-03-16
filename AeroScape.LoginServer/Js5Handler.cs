@@ -43,9 +43,10 @@ public sealed class Js5Handler
 
         try
         {
-            // Read remaining 2 handshake bytes: [revision_hi][revision_lo]
-            byte[] revBytes = await ReadExactAsync(stream, 2);
-            int revision = (revBytes[0] << 8) | revBytes[1];
+            // Read remaining 4 handshake bytes: revision as big-endian i32
+            // OSRS protocol: [opcode=15 (already consumed by LoginHandler)][revision: i32 (4 bytes)]
+            byte[] revBytes = await ReadExactAsync(stream, 4);
+            int revision = (revBytes[0] << 24) | (revBytes[1] << 16) | (revBytes[2] << 8) | revBytes[3];
             Console.WriteLine($"[{_remoteEndpoint}] JS5 handshake — client revision: {revision}");
 
             // Always accept — respond 0x00 (OK)
@@ -54,14 +55,14 @@ public sealed class Js5Handler
             Console.WriteLine($"[{_remoteEndpoint}] JS5 handshake accepted.");
 
             // Process cache requests indefinitely until client disconnects
-            byte[] requestBuf = new byte[3];
+            // OSRS JS5 request format: [priority (1)][index (1)][archive (2 bytes, big-endian)] = 4 bytes
+            byte[] requestBuf = new byte[4];
             while (!_ct.IsCancellationRequested)
             {
-                // Each request: [priority (1)][index (1)][archive (1)]
                 int totalRead = 0;
-                while (totalRead < 3)
+                while (totalRead < 4)
                 {
-                    int r = await stream.ReadAsync(requestBuf.AsMemory(totalRead, 3 - totalRead), _ct);
+                    int r = await stream.ReadAsync(requestBuf.AsMemory(totalRead, 4 - totalRead), _ct);
                     if (r == 0)
                     {
                         Console.WriteLine($"[{_remoteEndpoint}] JS5 client disconnected.");
@@ -72,18 +73,14 @@ public sealed class Js5Handler
 
                 byte priority = requestBuf[0];
                 byte index    = requestBuf[1];
-                byte archive  = requestBuf[2];
+                int  archive  = (requestBuf[2] << 8) | requestBuf[3];
 
                 Console.WriteLine($"[{_remoteEndpoint}] JS5 request — priority={priority} index={index} archive={archive}");
 
                 // Respond with a minimal valid cache container.
-                // OSRS JS5 response format for a single chunk (<=512 bytes payload):
-                //   [index (1)][archive (1)][compression (1)][length: i32 (4)][data...]
-                // An empty container: compression=0, length=0, no data.
-                // Total response = 6 bytes header + padding to fill chunk if needed.
-                //
-                // Real OSRS uses a "chunked" format with 0xFF separators every 512 bytes,
-                // but for an empty payload (length=0) there is no separator needed.
+                // OSRS JS5 response format:
+                //   [index (1)][archive_hi (1)][archive_lo (1)][compression (1)][length: i32 (4)][data...]
+                // Total header = 8 bytes. For an empty container: compression=0, length=0, no data.
                 byte[] response = BuildEmptyContainerResponse(index, archive);
                 await stream.WriteAsync(response, _ct);
                 await stream.FlushAsync(_ct);
@@ -121,7 +118,7 @@ public sealed class Js5Handler
     /// Note: OSRS splits the payload into 512-byte chunks with 0xFF bytes between them,
     /// but an empty payload means no chunks — so no separator is needed.
     /// </summary>
-    private static byte[] BuildEmptyContainerResponse(byte index, byte archive)
+    private static byte[] BuildEmptyContainerResponse(byte index, int archive)
     {
         // 7-byte header: [index(1)][archive_hi(1)][archive_lo(1)][compression(1)][length(4)]
         byte[] buf = new byte[7];
@@ -136,8 +133,8 @@ public sealed class Js5Handler
         // Oops — need 4 bytes for length. Let's make it 8 bytes total.
         byte[] response = new byte[8];
         response[0] = index;
-        response[1] = 0;       // archive hi
-        response[2] = archive; // archive lo
+        response[1] = (byte)(archive >> 8);   // archive hi
+        response[2] = (byte)(archive & 0xFF); // archive lo
         response[3] = 0;       // compression = none
         response[4] = 0;       // length byte 0 (MSB)
         response[5] = 0;       // length byte 1
