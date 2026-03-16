@@ -157,7 +157,8 @@ public sealed class Js5Handler
                 }
 
                 // For master checksum table (255,255), NEVER set prefetch bit — it corrupts the compression byte
-                bool usePrefetch = (index == 255 && archive == 255) ? false : prefetch;
+                // DISABLED: prefetch bit corrupts compression byte, causing CRC mismatches on all containers
+                bool usePrefetch = false; // was: (index == 255 && archive == 255) ? false : prefetch;
                 byte[] response = BuildResponse(index, archive, container, usePrefetch);
                 await stream.WriteAsync(response, _ct);
                 await stream.FlushAsync(_ct);
