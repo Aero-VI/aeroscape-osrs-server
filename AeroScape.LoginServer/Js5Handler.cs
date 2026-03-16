@@ -28,7 +28,7 @@ namespace AeroScape.LoginServer;
 /// </summary>
 public sealed class Js5Handler
 {
-    private const string CachePath = "/home/cache/rev235/cache";
+    private const string CachePath = "/home/cache/rev236/cache";
     private const string Dat2File  = CachePath + "/main_file_cache.dat2";
 
     // --- AEROSCAPE START ---
@@ -138,111 +138,26 @@ public sealed class Js5Handler
 
     // --- AEROSCAPE START ---
     /// <summary>
-    /// Build or return the cached master checksum table for index=255, archive=255.
-    ///
-    /// The OSRS master checksum table is NOT stored in idx255 as entry 255.
-    /// It is dynamically constructed from CRC32 checksums and version numbers
-    /// of each sub-index's reference container (index=255, archive=0 to numIndices-1).
-    ///
-    /// Output container format (uncompressed, compression=0):
-    ///   [compression=0 (1 byte)]
-    ///   [uncompressed_length (4 bytes big-endian)]
-    ///   For each sub-index i (0 to numIndices-1):
-    ///     [crc32_of_raw_container (4 bytes big-endian)]
-    ///     [version (4 bytes big-endian)]
+    /// Load the pre-built master checksum table from master_index.dat.
     /// </summary>
     private static byte[]? GetOrBuildMasterChecksumTable()
     {
         if (_masterChecksumTable != null)
             return _masterChecksumTable;
-
         lock (_masterLock)
         {
             if (_masterChecksumTable != null)
                 return _masterChecksumTable;
-
-            try
+            string path = CachePath + "/master_index.dat";
+            if (!File.Exists(path))
             {
-                string idx255Path = $"{CachePath}/main_file_cache.idx255";
-                if (!File.Exists(idx255Path))
-                {
-                    Console.WriteLine("[JS5] idx255 not found, cannot build master checksum table");
-                    return null;
-                }
-
-                long idx255Length = new FileInfo(idx255Path).Length;
-                int numIndices = (int)(idx255Length / 6); // 6 bytes per entry in idx255
-                Console.WriteLine($"[JS5] Building master checksum table for {numIndices} sub-indices...");
-
-                // Each index entry: [crc32 (4)] + [version (4)] = 8 bytes
-                byte[] table = new byte[numIndices * 8];
-
-                for (int i = 0; i < numIndices; i++)
-                {
-                    byte[]? container = LoadContainer(255, i);
-                    if (container == null || container.Length == 0)
-                    {
-                        Console.WriteLine($"[JS5] Master table: sub-index {i} empty, using crc=0 version=0");
-                        continue;
-                    }
-
-                    // CRC32 of the raw container bytes EXCLUDING the last 2 bytes (version trailer)
-                    uint crc = ComputeCrc32(container[0..^2]);
-
-                    // Version: the last 2 bytes of the container as a big-endian unsigned short.
-                    // OSRS containers have a 2-byte version/revision trailer at the end.
-                    int version = 0;
-                    if (container.Length >= 2)
-                    {
-                        version = (container[^2] << 8) | container[^1];
-                    }
-
-                    int off = i * 8;
-                    table[off]     = (byte)(crc >> 24);
-                    table[off + 1] = (byte)(crc >> 16);
-                    table[off + 2] = (byte)(crc >> 8);
-                    table[off + 3] = (byte)crc;
-                    table[off + 4] = (byte)(version >> 24);
-                    table[off + 5] = (byte)(version >> 16);
-                    table[off + 6] = (byte)(version >> 8);
-                    table[off + 7] = (byte)version;
-                }
-
-                // Wrap table in an uncompressed OSRS container:
-                // [compression=0][length_4_BE][table_bytes]
-                byte[] result = new byte[5 + table.Length];
-                result[0] = 0; // compression = none
-                result[1] = (byte)(table.Length >> 24);
-                result[2] = (byte)(table.Length >> 16);
-                result[3] = (byte)(table.Length >> 8);
-                result[4] = (byte)table.Length;
-                Array.Copy(table, 0, result, 5, table.Length);
-
-                _masterChecksumTable = result;
-                Console.WriteLine($"[JS5] Master checksum table built: {result.Length} bytes ({numIndices} entries)");
-                return _masterChecksumTable;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[JS5] Error building master checksum table: {ex.Message}");
+                Console.WriteLine("[JS5] master_index.dat not found");
                 return null;
             }
+            _masterChecksumTable = File.ReadAllBytes(path);
+            Console.WriteLine($"[JS5] Loaded master_index.dat: {_masterChecksumTable.Length} bytes");
+            return _masterChecksumTable;
         }
-    }
-
-    /// <summary>
-    /// CRC32 using the standard OSRS/ZIP polynomial 0xEDB88320.
-    /// </summary>
-    private static uint ComputeCrc32(byte[] data)
-    {
-        uint crc = 0xFFFFFFFF;
-        foreach (byte b in data)
-        {
-            crc ^= b;
-            for (int j = 0; j < 8; j++)
-                crc = (crc & 1) != 0 ? (crc >> 1) ^ 0xEDB88320 : crc >> 1;
-        }
-        return crc ^ 0xFFFFFFFF;
     }
     // --- AEROSCAPE END ---
 
