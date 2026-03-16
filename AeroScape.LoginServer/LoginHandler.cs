@@ -330,17 +330,44 @@ public sealed class LoginHandler
 
             Console.WriteLine($"[{_remoteEndpoint}] Accepting login for '{username}' at slot {playerIndex}");
 
-            // Success response: [2][rights][0x00][playerIndex: u16]
-            byte[] response = new byte[5];
-            response[0] = ResponseSuccess;
-            response[1] = PlayerRights;
-            response[2] = 0x00;
-            response[3] = (byte)(playerIndex >> 8);
-            response[4] = (byte)(playerIndex & 0xFF);
+            // Rev 236 login success response (from RSProt OkLoginResponseEncoder):
+            //   [opcode: 1]     = 2 (OK)
+            //   [size: 1]       = 37 (VAR_BYTE, hardcoded by client)
+            //   [authType: 1]   = 0 (no authenticator)
+            //   [authCode: 4]   = 0x00000000
+            //   [staffMod: 1]   = player rights
+            //   [playerMod: 1]  = boolean (0 or 1)
+            //   [index: 2]      = player index (big endian)
+            //   [member: 1]     = boolean (1 = member)
+            //   [accountHash: 8]= 0s
+            //   [userId: 8]     = 0s
+            //   [userHash: 8]   = 0s
+            // Total: 2 (header) + 34 (payload) = 36 bytes
+            byte[] response = new byte[36];
+            int wPos = 0;
+            response[wPos++] = ResponseSuccess;        // opcode = 2
+            response[wPos++] = 37;                     // payload size (VAR_BYTE)
+            response[wPos++] = 0;                      // authenticator type: 0 = no authenticator
+            response[wPos++] = 0;                      // authenticator code byte 1
+            response[wPos++] = 0;                      // authenticator code byte 2
+            response[wPos++] = 0;                      // authenticator code byte 3
+            response[wPos++] = 0;                      // authenticator code byte 4
+            response[wPos++] = PlayerRights;            // staffModLevel
+            response[wPos++] = (PlayerRights >= 2) ? (byte)1 : (byte)0; // playerMod boolean
+            response[wPos++] = (byte)(playerIndex >> 8);  // index high byte
+            response[wPos++] = (byte)(playerIndex & 0xFF);// index low byte
+            response[wPos++] = 1;                      // member = true
+            // accountHash (8 bytes of zeros)
+            for (int i = 0; i < 8; i++) response[wPos++] = 0;
+            // userId (8 bytes of zeros)
+            for (int i = 0; i < 8; i++) response[wPos++] = 0;
+            // userHash (8 bytes of zeros)
+            for (int i = 0; i < 8; i++) response[wPos++] = 0;
+
             await stream.WriteAsync(response, _ct);
             await stream.FlushAsync(_ct);
 
-            Console.WriteLine($"[{_remoteEndpoint}] Sent success response (code 2) for '{username}'");
+            Console.WriteLine($"[{_remoteEndpoint}] Sent rev 236 success response ({response.Length} bytes) for '{username}'");
 
             // ── Phase 7: ISAAC cipher initialisation ───────────────────────────────
             var inCipher  = new IsaacCipher(isaacSeeds);
