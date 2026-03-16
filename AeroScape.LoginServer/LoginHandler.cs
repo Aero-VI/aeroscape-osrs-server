@@ -10,7 +10,7 @@ namespace AeroScape.LoginServer;
 /// <summary>
 /// OSRS-compatible login protocol handler (rev 236).
 ///
-/// Implements the full OSRS login handshake based on RSProt rev 229+ protocol:
+/// Implements the full OSRS login handshake based on RSProt rev 236 protocol:
 ///   Phase 1  — Service selector (handshake opcode)
 ///   Phase 2  — Server hello (server seed)
 ///   Phase 3  — Login request header (login type + payload size + revision + sub fields + RSA block)
@@ -34,7 +34,7 @@ public sealed class LoginHandler
     private const byte LoginTypeNew       = 16;
     private const byte LoginTypeReconnect = 18;
 
-    // RSA block magic byte (RSProt uses 1, not 0x0A)
+    // RSA block magic byte (RSProt uses 1)
     private const byte RsaMagic = 1;
 
     // Response codes
@@ -107,14 +107,16 @@ public sealed class LoginHandler
 
             // ── Phase 3: Login request header ─────────────────────────────────────
             // Rev 236 format (from RSProt LoginBlockDecoder):
-            //   loginType     (1 byte)  — already read above for routing
+            //   loginType     (1 byte)  — already read for routing
             //   payloadSize   (2 bytes, big-endian)
-            //   revision      (4 bytes, g4)
+            //   version       (4 bytes, g4) — client revision
             //   subVersion    (4 bytes, g4)
+            //   serverVersion (4 bytes, g4) — *** WAS MISSING ***
             //   clientType    (1 byte, g1)
             //   platformType  (1 byte, g1)
             //   extAuthType   (1 byte, g1)
-            //   [rsaBlock ... N bytes, where N = RSA key size in bytes (512-bit key = 64 bytes)]
+            //   rsaSize       (2 bytes, g2) — RSA block length prefix
+            //   [rsaBlock ... rsaSize bytes]
             //   [xteaBlock ... remaining bytes]
 
             byte loginType = await ReadByteAsync(stream);
@@ -127,12 +129,13 @@ public sealed class LoginHandler
             int payloadSize    = await ReadUShortAsync(stream);
             int clientRevision = await ReadIntAsync(stream);
             int subVersion     = await ReadIntAsync(stream);
+            int serverVersion  = await ReadIntAsync(stream);  // *** NEW: was missing ***
             byte clientType    = await ReadByteAsync(stream);
             byte platformType  = await ReadByteAsync(stream);
             byte extAuthType   = await ReadByteAsync(stream);
 
             Console.WriteLine($"[{_remoteEndpoint}] Login type={loginType} payloadSize={payloadSize} revision={clientRevision}");
-            Console.WriteLine($"[{_remoteEndpoint}] subVersion={subVersion} clientType={clientType} platformType={platformType} extAuthType={extAuthType}");
+            Console.WriteLine($"[{_remoteEndpoint}] subVersion={subVersion} serverVersion={serverVersion} clientType={clientType} platformType={platformType} extAuthType={extAuthType}");
 
             // Revision check (skip if ExpectedRevision == 0)
             if (ExpectedRevision != 0 && clientRevision != ExpectedRevision)
@@ -142,63 +145,31 @@ public sealed class LoginHandler
                 return;
             }
 
-            // RSA block size is determined by the server key size (no size prefix in rev 236)
-            int rsaBlockSize = RsaKeys.Modulus.GetByteCount(isUnsigned: true);
-            Console.WriteLine($"[{_remoteEndpoint}] rsaBlockSize={rsaBlockSize} (from RSA key)");
+            // ── Phase 4: RSA block ────────────────────────────────────────────────
+            // RSProt: val rsaSize = buffer.g2()
+            int rsaSize = await ReadUShortAsync(stream);
+            Console.WriteLine($"[{_remoteEndpoint}] RSA block size from client: {rsaSize}");
 
-            // ── DEBUG: Read entire remaining payload and probe RSA offset ──────────
-            // Already consumed from payload: revision(4) + subVersion(4) + clientType(1) + platformType(1) + extAuthType(1) = 11 bytes
-            int alreadyConsumed = 4 + 4 + 1 + 1 + 1; // 11
-            int remainingPayload = payloadSize - alreadyConsumed;
-            byte[] fullPayload = await ReadBytesAsync(stream, remainingPayload);
-            Console.WriteLine($"[{_remoteEndpoint}] Full remaining payload ({remainingPayload} bytes): {BitConverter.ToString(fullPayload, 0, Math.Min(100, remainingPayload))}");
+            // Header bytes consumed from payload: version(4) + subVersion(4) + serverVersion(4) + clientType(1) + platformType(1) + extAuthType(1) + rsaSize(2) = 17
+            int headerConsumed = 4 + 4 + 4 + 1 + 1 + 1 + 2; // 17
 
-            // Probe: try decrypting 64-byte blocks at ALL possible offsets
-            int foundOffset = -1;
-            byte[] plaintext = null!;
-            int maxProbe = remainingPayload - rsaBlockSize;
-            for (int probe = 0; probe <= maxProbe; probe++)
+            byte[] rsaBlock = await ReadBytesAsync(stream, rsaSize);
+            Console.WriteLine($"[{_remoteEndpoint}] RSA block ({rsaSize} bytes): {BitConverter.ToString(rsaBlock, 0, Math.Min(32, rsaSize))}...");
+
+            // Decrypt RSA block
+            byte[] plaintext;
+            try
             {
-                byte[] candidate = new byte[rsaBlockSize];
-                Array.Copy(fullPayload, probe, candidate, 0, rsaBlockSize);
-                try
-                {
-                    byte[] dec = RsaKeys.Decrypt(candidate);
-                    int p0 = 0;
-                    if (dec.Length > 0 && dec[0] == 0x00) p0 = 1;
-                    byte magic = p0 < dec.Length ? dec[p0] : (byte)0xFF;
-                    // Only log every 50th offset to reduce spam, plus first 25
-                    if (probe < 25 || probe % 50 == 0 || magic == 0x01 || magic == 0x0A)
-                        Console.WriteLine($"[{_remoteEndpoint}] Probe offset={probe}: decrypted[{p0}]=0x{magic:X2} (len={dec.Length})");
-                    if (magic == 0x01 || magic == 0x0A)
-                    {
-                        foundOffset = probe;
-                        plaintext = dec;
-                        Console.WriteLine($"[{_remoteEndpoint}] *** FOUND RSA block at payload offset {probe} (absolute offset {alreadyConsumed + probe}) magic=0x{magic:X2} ***");
-                        break;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    if (probe < 5)
-                        Console.WriteLine($"[{_remoteEndpoint}] Probe offset={probe}: decrypt error: {ex.Message}");
-                }
+                plaintext = RsaKeys.Decrypt(rsaBlock);
             }
-
-            if (foundOffset < 0)
+            catch (Exception ex)
             {
-                // Dump more of the payload for analysis
-                Console.WriteLine($"[{_remoteEndpoint}] Could not find valid RSA block at ANY offset 0-{maxProbe}.");
-                Console.WriteLine($"[{_remoteEndpoint}] This likely means the client is NOT using our RSA key!");
-                Console.WriteLine($"[{_remoteEndpoint}] Full payload hex ({remainingPayload} bytes):");
-                for (int i = 0; i < remainingPayload; i += 64)
-                {
-                    int len = Math.Min(64, remainingPayload - i);
-                    Console.WriteLine($"[{_remoteEndpoint}]   +{i:D3}: {BitConverter.ToString(fullPayload, i, len)}");
-                }
+                Console.WriteLine($"[{_remoteEndpoint}] RSA decryption failed: {ex.Message}");
                 await SendByteAsync(stream, ResponseMalformed);
                 return;
             }
+
+            Console.WriteLine($"[{_remoteEndpoint}] RSA plaintext ({plaintext.Length} bytes): {BitConverter.ToString(plaintext, 0, Math.Min(40, plaintext.Length))}");
 
             // Parse plaintext RSA block
             int pos = 0;
@@ -207,9 +178,15 @@ public sealed class LoginHandler
             if (plaintext.Length > 0 && plaintext[0] == 0x00)
                 pos = 1;
 
-            // RSA magic already verified in probe
+            // RSA magic check
+            if (pos >= plaintext.Length || plaintext[pos] != RsaMagic)
+            {
+                Console.WriteLine($"[{_remoteEndpoint}] Invalid RSA magic byte: 0x{(pos < plaintext.Length ? plaintext[pos] : 0xFF):X2} (expected 0x01). RSA key mismatch?");
+                await SendByteAsync(stream, ResponseMalformed);
+                return;
+            }
             pos++; // skip magic byte
-            Console.WriteLine($"[{_remoteEndpoint}] RSA magic OK (found at remaining-payload offset {foundOffset})");
+            Console.WriteLine($"[{_remoteEndpoint}] RSA magic OK (0x01)");
 
             // 4 x i32 ISAAC seeds
             if (pos + 16 > plaintext.Length)
@@ -285,22 +262,17 @@ public sealed class LoginHandler
             Console.WriteLine($"[{_remoteEndpoint}] RSA block parsed — credential length: {password.Length}");
 
             // ── Phase 5: XTEA-encrypted remainder ─────────────────────────────────
-            // The XTEA block is everything after the RSA block in the remaining payload
-            int xteaStart = foundOffset + rsaBlockSize;
-            int xteaLen = remainingPayload - xteaStart;
-
-            Console.WriteLine($"[{_remoteEndpoint}] XTEA block: remainingPayload={remainingPayload} rsaEnd={xteaStart} xteaLen={xteaLen}");
-            if (xteaLen > 0)
-            {
-                Console.WriteLine($"[{_remoteEndpoint}] XTEA first bytes: {BitConverter.ToString(fullPayload, xteaStart, Math.Min(20, xteaLen))}");
-            }
+            // The XTEA block is the rest of the payload after header + rsaSize prefix + RSA block
+            int xteaLen = payloadSize - headerConsumed - rsaSize;
+            Console.WriteLine($"[{_remoteEndpoint}] XTEA block: payloadSize={payloadSize} headerConsumed={headerConsumed} rsaSize={rsaSize} xteaLen={xteaLen}");
 
             string username = "unknown";
 
             if (xteaLen > 0)
             {
-                byte[] xteaBytes = new byte[xteaLen];
-                Array.Copy(fullPayload, xteaStart, xteaBytes, 0, xteaLen);
+                byte[] xteaBytes = await ReadBytesAsync(stream, xteaLen);
+                Console.WriteLine($"[{_remoteEndpoint}] XTEA raw first bytes: {BitConverter.ToString(xteaBytes, 0, Math.Min(20, xteaLen))}");
+
                 try
                 {
                     Xtea.Decrypt(xteaBytes, 0, xteaBytes.Length, isaacSeeds);
