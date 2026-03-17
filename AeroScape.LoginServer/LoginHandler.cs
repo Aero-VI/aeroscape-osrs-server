@@ -18,6 +18,7 @@ namespace AeroScape.LoginServer;
 ///   Phase 5  — XTEA-encrypted remainder block (username, display, machine info, CRCs)
 ///   Phase 6  — Server login response
 ///   Phase 7  — ISAAC cipher initialisation
+///   Phase 8  — Game traffic loop with REBUILD_NORMAL + keepalive
 ///
 /// For Phase 1, any username/password is accepted (no credential validation).
 /// </summary>
@@ -54,6 +55,18 @@ public sealed class LoginHandler
     // Password authentication types
     private const byte PasswordAuth = 0;
     private const byte TokenAuth    = 2;
+
+    // Server packet opcodes (from RSProt rev 236 GameServerProtId)
+    private const byte OpcodeRebuildNormal  = 34;
+    private const byte OpcodeServerTickEnd  = 14;
+
+    // Default spawn: Lumbridge
+    private const int SpawnX = 3222;
+    private const int SpawnZ = 3218;
+    private const int SpawnLevel = 0;
+
+    // Game tick interval (ms)
+    private const int GameTickMs = 600;
 
     // Static player index counter
     private static int _nextPlayerIndex = 1;
@@ -106,19 +119,6 @@ public sealed class LoginHandler
             await stream.FlushAsync(_ct);
 
             // ── Phase 3: Login request header ─────────────────────────────────────
-            // Rev 236 format (from RSProt LoginBlockDecoder):
-            //   loginType     (1 byte)  — already read for routing
-            //   payloadSize   (2 bytes, big-endian)
-            //   version       (4 bytes, g4) — client revision
-            //   subVersion    (4 bytes, g4)
-            //   serverVersion (4 bytes, g4) — *** WAS MISSING ***
-            //   clientType    (1 byte, g1)
-            //   platformType  (1 byte, g1)
-            //   extAuthType   (1 byte, g1)
-            //   rsaSize       (2 bytes, g2) — RSA block length prefix
-            //   [rsaBlock ... rsaSize bytes]
-            //   [xteaBlock ... remaining bytes]
-
             byte loginType = await ReadByteAsync(stream);
             if (loginType != LoginTypeNew && loginType != LoginTypeReconnect)
             {
@@ -129,7 +129,7 @@ public sealed class LoginHandler
             int payloadSize    = await ReadUShortAsync(stream);
             int clientRevision = await ReadIntAsync(stream);
             int subVersion     = await ReadIntAsync(stream);
-            int serverVersion  = await ReadIntAsync(stream);  // *** NEW: was missing ***
+            int serverVersion  = await ReadIntAsync(stream);
             byte clientType    = await ReadByteAsync(stream);
             byte platformType  = await ReadByteAsync(stream);
             byte extAuthType   = await ReadByteAsync(stream);
@@ -146,11 +146,9 @@ public sealed class LoginHandler
             }
 
             // ── Phase 4: RSA block ────────────────────────────────────────────────
-            // RSProt: val rsaSize = buffer.g2()
             int rsaSize = await ReadUShortAsync(stream);
             Console.WriteLine($"[{_remoteEndpoint}] RSA block size from client: {rsaSize}");
 
-            // Header bytes consumed from payload: version(4) + subVersion(4) + serverVersion(4) + clientType(1) + platformType(1) + extAuthType(1) + rsaSize(2) = 17
             int headerConsumed = 4 + 4 + 4 + 1 + 1 + 1 + 2; // 17
 
             byte[] rsaBlock = await ReadBytesAsync(stream, rsaSize);
@@ -204,7 +202,7 @@ public sealed class LoginHandler
             }
             Console.WriteLine($"[{_remoteEndpoint}] ISAAC seeds: [{isaacSeeds[0]:X8}, {isaacSeeds[1]:X8}, {isaacSeeds[2]:X8}, {isaacSeeds[3]:X8}]");
 
-            // Session ID (8 bytes / long) — from RSProt: sessionId = rsaBuffer.g8()
+            // Session ID (8 bytes / long)
             if (pos + 8 > plaintext.Length)
             {
                 Console.WriteLine($"[{_remoteEndpoint}] RSA block too short for session ID.");
@@ -215,7 +213,7 @@ public sealed class LoginHandler
             pos += 8;
             Console.WriteLine($"[{_remoteEndpoint}] sessionId={sessionId}");
 
-            // OTP authentication — from RSProt: decodeOtpAuthentication
+            // OTP authentication
             if (pos >= plaintext.Length)
             {
                 Console.WriteLine($"[{_remoteEndpoint}] RSA block too short for OTP type.");
@@ -228,25 +226,16 @@ public sealed class LoginHandler
 
             switch (otpType)
             {
-                case OtpToken: // trusted computer — 4 bytes identifier
-                    if (pos + 4 <= plaintext.Length) pos += 4;
-                    break;
-                case OtpRemember: // trusted authenticator — 3 bytes key + 1 skip
-                    if (pos + 4 <= plaintext.Length) pos += 4;
-                    break;
-                case OtpNone: // no MFA — skip 4 bytes
-                    if (pos + 4 <= plaintext.Length) pos += 4;
-                    break;
-                case OtpForget: // untrusted — 3 bytes key + 1 skip
-                    if (pos + 4 <= plaintext.Length) pos += 4;
-                    break;
+                case OtpToken:
+                case OtpRemember:
+                case OtpNone:
+                case OtpForget:
                 default:
-                    Console.WriteLine($"[{_remoteEndpoint}] Unknown OTP type {otpType}, skipping 4 bytes.");
                     if (pos + 4 <= plaintext.Length) pos += 4;
                     break;
             }
 
-            // Password authentication type — from RSProt: decodeAuthentication
+            // Password authentication type
             if (pos >= plaintext.Length)
             {
                 Console.WriteLine($"[{_remoteEndpoint}] RSA block too short for auth type.");
@@ -262,7 +251,6 @@ public sealed class LoginHandler
             Console.WriteLine($"[{_remoteEndpoint}] RSA block parsed — credential length: {password.Length}");
 
             // ── Phase 5: XTEA-encrypted remainder ─────────────────────────────────
-            // The XTEA block is the rest of the payload after header + rsaSize prefix + RSA block
             int xteaLen = payloadSize - headerConsumed - rsaSize;
             Console.WriteLine($"[{_remoteEndpoint}] XTEA block: payloadSize={payloadSize} headerConsumed={headerConsumed} rsaSize={rsaSize} xteaLen={xteaLen}");
 
@@ -277,26 +265,10 @@ public sealed class LoginHandler
                 {
                     Xtea.Decrypt(xteaBytes, 0, xteaBytes.Length, isaacSeeds);
 
-                    // Parse XTEA block — from RSProt:
-                    //   username (null-terminated string, gjstr)
-                    //   packedClientSettings (1 byte)
-                    //   width (2 bytes)
-                    //   height (2 bytes)
-                    //   uuid (24 bytes)
-                    //   siteSettings (null-terminated string)
-                    //   affiliate (4 bytes)
-                    //   deepLinkCount (1 byte) + deepLinks
-                    //   hostPlatformStats (variable)
-                    //   secondClientType (1 byte)
-                    //   reflectionCheckerConst (4 bytes)
-                    //   CRC values
                     int xp = 0;
-
-                    // Username (null-terminated string)
                     username = ReadNullTerminatedString(xteaBytes, ref xp);
                     Console.WriteLine($"[{_remoteEndpoint}] Username: '{username}'");
 
-                    // Packed client settings
                     if (xp < xteaBytes.Length)
                     {
                         byte packedSettings = xteaBytes[xp++];
@@ -305,7 +277,6 @@ public sealed class LoginHandler
                         Console.WriteLine($"[{_remoteEndpoint}] Settings: lowDetail={lowDetail} resizable={resizable}");
                     }
 
-                    // Canvas dimensions
                     if (xp + 4 <= xteaBytes.Length)
                     {
                         ushort canvasW = (ushort)((xteaBytes[xp] << 8) | xteaBytes[xp + 1]); xp += 2;
@@ -313,36 +284,20 @@ public sealed class LoginHandler
                         Console.WriteLine($"[{_remoteEndpoint}] Canvas: {canvasW}x{canvasH}");
                     }
 
-                    // Skip remaining XTEA data (uuid, siteSettings, machine info, CRCs, etc.)
                     Console.WriteLine($"[{_remoteEndpoint}] XTEA block parsed (remaining {xteaBytes.Length - xp} bytes skipped)");
                 }
                 catch (Exception ex)
                 {
                     Console.WriteLine($"[{_remoteEndpoint}] XTEA decryption warning: {ex.Message}");
-                    // Non-fatal — continue with login
                 }
             }
 
             // ── Phase 6: Authentication ────────────────────────────────────────────
-            // Accept any username/password — no credential validation.
             int playerIndex = System.Threading.Interlocked.Increment(ref _nextPlayerIndex) % 2047;
             if (playerIndex == 0) playerIndex = 1;
 
             Console.WriteLine($"[{_remoteEndpoint}] Accepting login for '{username}' at slot {playerIndex}");
 
-            // Rev 236 login success response (from RSProt OkLoginResponseEncoder):
-            //   [opcode: 1]     = 2 (OK)
-            //   [size: 1]       = 37 (VAR_BYTE, hardcoded by client)
-            //   [authType: 1]   = 0 (no authenticator)
-            //   [authCode: 4]   = 0x00000000
-            //   [staffMod: 1]   = player rights
-            //   [playerMod: 1]  = boolean (0 or 1)
-            //   [index: 2]      = player index (big endian)
-            //   [member: 1]     = boolean (1 = member)
-            //   [accountHash: 8]= 0s
-            //   [userId: 8]     = 0s
-            //   [userHash: 8]   = 0s
-            // Total: 2 (header) + 34 (payload) = 36 bytes
             byte[] response = new byte[36];
             int wPos = 0;
             response[wPos++] = ResponseSuccess;        // opcode = 2
@@ -399,7 +354,9 @@ public sealed class LoginHandler
     }
 
     /// <summary>
-    /// Minimal post-login game traffic loop.
+    /// Post-login game traffic loop.
+    /// Sends REBUILD_NORMAL to place the player in the world, then maintains
+    /// the connection with periodic SERVER_TICK_END keepalives.
     /// </summary>
     private async Task GameTrafficLoopAsync(
         NetworkStream stream,
@@ -410,28 +367,132 @@ public sealed class LoginHandler
     {
         Console.WriteLine($"[{username}:{playerIndex}] Entering game traffic loop.");
 
+        // ── Send REBUILD_NORMAL for Lumbridge ──────────────────────────────────
+        await SendRebuildNormal(stream, outCipher, SpawnX, SpawnZ, SpawnLevel);
+        Console.WriteLine($"[{username}:{playerIndex}] Sent REBUILD_NORMAL (Lumbridge {SpawnX},{SpawnZ}).");
+
+        // ── Game loop: read client packets + send keepalives ───────────────────
         byte[] buf = new byte[4096];
+        var lastTickSend = DateTime.UtcNow;
+
         while (!_ct.IsCancellationRequested)
         {
-            int bytesRead;
-            try
+            // Read with a timeout so we can interleave keepalive sends
+            using (var readCts = CancellationTokenSource.CreateLinkedTokenSource(_ct))
             {
-                bytesRead = await stream.ReadAsync(buf, _ct);
-            }
-            catch (Exception)
-            {
-                break;
+                readCts.CancelAfter(GameTickMs);
+                try
+                {
+                    int bytesRead = await stream.ReadAsync(buf.AsMemory(), readCts.Token);
+                    if (bytesRead == 0)
+                    {
+                        Console.WriteLine($"[{username}:{playerIndex}] Client closed connection.");
+                        break;
+                    }
+
+                    // Decode the opcode using the incoming ISAAC cipher
+                    int maskedOpcode = buf[0] & 0xFF;
+                    int rawOpcode    = (maskedOpcode - (inCipher.NextInt() & 0xFF)) & 0xFF;
+                    Console.WriteLine($"[{username}:{playerIndex}] Recv packet: masked=0x{maskedOpcode:X2} raw=0x{rawOpcode:X2} ({bytesRead} bytes)");
+                }
+                catch (OperationCanceledException) when (!_ct.IsCancellationRequested)
+                {
+                    // Read timed out — normal, just send keepalive below
+                }
             }
 
-            if (bytesRead == 0)
-                break;
-
-            int maskedOpcode = buf[0] & 0xFF;
-            int rawOpcode    = (maskedOpcode - inCipher.NextInt()) & 0xFF;
-            Console.WriteLine($"[{username}:{playerIndex}] Received packet — masked={maskedOpcode:X2} raw={rawOpcode:X2} ({bytesRead} bytes)");
+            // Send SERVER_TICK_END keepalive every game tick
+            var now = DateTime.UtcNow;
+            if ((now - lastTickSend).TotalMilliseconds >= GameTickMs)
+            {
+                try
+                {
+                    await SendFixedPacket(stream, outCipher, OpcodeServerTickEnd);
+                    await stream.FlushAsync(_ct);
+                    lastTickSend = now;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[{username}:{playerIndex}] Write error: {ex.Message}");
+                    break;
+                }
+            }
         }
 
         Console.WriteLine($"[{username}:{playerIndex}] Disconnected.");
+    }
+
+    // ── Outgoing Packet Helpers ────────────────────────────────────────────────
+
+    /// <summary>
+    /// Sends a REBUILD_NORMAL packet (opcode 34, VAR_SHORT).
+    /// Format (from RSProt rev 236 RebuildNormalEncoder):
+    ///   p2(zoneZ)  p2Alt3(zoneX)  p2Alt1(worldArea)  p2(keyCount)  [keys...]
+    /// XTEA keys are all zeros (fine for F2P/unencrypted map regions).
+    /// </summary>
+    private static async Task SendRebuildNormal(
+        NetworkStream stream, IsaacCipher outCipher,
+        int absX, int absZ, int level)
+    {
+        int zoneX = absX >> 3;  // 3222 >> 3 = 402
+        int zoneZ = absZ >> 3;  // 3218 >> 3 = 402
+
+        // Calculate which map squares (regions) fall in the build area
+        // Build area = 13x13 zones centered on player zone
+        int minMsX = (zoneX - 6) >> 3;  // map square X
+        int maxMsX = (zoneX + 6) >> 3;
+        int minMsZ = (zoneZ - 6) >> 3;
+        int maxMsZ = (zoneZ + 6) >> 3;
+
+        int keyCount = (maxMsX - minMsX + 1) * (maxMsZ - minMsZ + 1);
+
+        // Build payload
+        // 2 (zoneZ) + 2 (zoneX) + 2 (worldArea) + 2 (keyCount) + keyCount * 16
+        int payloadLen = 2 + 2 + 2 + 2 + (keyCount * 16);
+        byte[] payload = new byte[payloadLen];
+        int p = 0;
+
+        // p2(zoneZ) — big-endian short
+        payload[p++] = (byte)(zoneZ >> 8);
+        payload[p++] = (byte)(zoneZ & 0xFF);
+
+        // p2Alt3(zoneX) — (value+128) & 0xFF, then value >> 8
+        payload[p++] = (byte)((zoneX + 128) & 0xFF);
+        payload[p++] = (byte)((zoneX >> 8) & 0xFF);
+
+        // p2Alt1(worldArea) — little-endian short (worldArea = 0)
+        payload[p++] = 0;
+        payload[p++] = 0;
+
+        // p2(keyCount) — big-endian short
+        payload[p++] = (byte)(keyCount >> 8);
+        payload[p++] = (byte)(keyCount & 0xFF);
+
+        // XTEA keys: all zeros (keyCount x 4 ints x 4 bytes = keyCount * 16)
+        // payload is already zero-initialized, so nothing to write
+
+        // Encode the full packet: [encrypted opcode][size:2][payload]
+        byte[] packet = new byte[1 + 2 + payloadLen];
+        int encOpcode = (OpcodeRebuildNormal + (outCipher.NextInt() & 0xFF)) & 0xFF;
+        packet[0] = (byte)encOpcode;
+        // VAR_SHORT: 2-byte big-endian length
+        packet[1] = (byte)(payloadLen >> 8);
+        packet[2] = (byte)(payloadLen & 0xFF);
+        Buffer.BlockCopy(payload, 0, packet, 3, payloadLen);
+
+        await stream.WriteAsync(packet);
+        await stream.FlushAsync();
+    }
+
+    /// <summary>
+    /// Sends a fixed-size zero-payload packet (e.g. SERVER_TICK_END).
+    /// Just writes the ISAAC-encrypted opcode byte.
+    /// </summary>
+    private static async Task SendFixedPacket(
+        NetworkStream stream, IsaacCipher outCipher, byte opcode)
+    {
+        int encOpcode = (opcode + (outCipher.NextInt() & 0xFF)) & 0xFF;
+        await stream.WriteAsync(new byte[] { (byte)encOpcode });
     }
 
     // ── Helper Methods ─────────────────────────────────────────────────────────
