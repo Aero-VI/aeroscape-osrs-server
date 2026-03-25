@@ -91,6 +91,11 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IMessageHandler<DialogueContinueMessage>, DialogueContinueHandler>();
         services.AddScoped<IMessageHandler<GroundItemInteractMessage>, GroundItemInteractHandler>();
         services.AddScoped<IMessageHandler<FocusChangedMessage>, FocusChangedHandler>();
+        services.AddScoped<IMessageHandler<NpcAttackMessage>, NpcAttackHandler>();
+        services.AddScoped<IMessageHandler<ItemOnItemMessage>, ItemOnItemHandler>();
+        services.AddScoped<IMessageHandler<ItemOnNpcMessage>, ItemOnNpcHandler>();
+        services.AddScoped<IMessageHandler<ItemOnObjectMessage>, ItemOnObjectHandler>();
+        services.AddScoped<IMessageHandler<ItemOnPlayerMessage>, ItemOnPlayerHandler>();
         services.AddScoped<IMessageHandler<AddFriendMessage>, AddFriendHandler>();
         services.AddScoped<IMessageHandler<RemoveFriendMessage>, RemoveFriendHandler>();
         services.AddScoped<IMessageHandler<AddIgnoreMessage>, AddIgnoreHandler>();
