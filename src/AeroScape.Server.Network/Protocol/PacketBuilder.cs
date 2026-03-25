@@ -13,7 +13,6 @@ public sealed class PacketBuilder
     private byte[] _buffer;
     private int _position;
     private int _bitPosition;
-    private bool _bitMode;
 
     public PacketBuilder(int initialCapacity = 256)
     {
@@ -135,7 +134,6 @@ public sealed class PacketBuilder
     public void InitBitAccess()
     {
         _bitPosition = _position * 8;
-        _bitMode = true;
     }
 
     public void WriteBits(int numBits, int value)
@@ -168,7 +166,6 @@ public sealed class PacketBuilder
     public void FinishBitAccess()
     {
         _position = (_bitPosition + 7) / 8;
-        _bitMode = false;
     }
 
     private static int BitMask(int bits) => (1 << bits) - 1;

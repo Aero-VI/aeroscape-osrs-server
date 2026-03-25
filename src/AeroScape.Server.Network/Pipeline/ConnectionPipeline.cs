@@ -459,9 +459,7 @@ public sealed class ConnectionPipeline
                     {
                         if (buffer.Length < 2) break;
 
-                        Span<byte> sizeBuf = stackalloc byte[2];
-                        buffer.Slice(0, 2).CopyTo(sizeBuf);
-                        size = BinaryPrimitives.ReadInt16BigEndian(sizeBuf) & 0xFFFF;
+                        size = (GetByte(buffer, 0) << 8 | GetByte(buffer, 1)) & 0xFFFF;
                         buffer = buffer.Slice(2);
                     }
 
