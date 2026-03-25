@@ -41,6 +41,11 @@ public sealed class Player
     public int RunEnergy { get; set; } = 100;
     public bool EnergyChanged { get; set; }
     
+    // Prayer
+    public bool[] PrayerActive { get; } = new bool[27];
+    public int PrayerIcon { get; set; } = -1;
+    public int PrayerDrainRate { get; set; }
+    
     // Combat
     public bool AutoRetaliate { get; set; } = true;
     public int? FollowTargetIndex { get; set; }
