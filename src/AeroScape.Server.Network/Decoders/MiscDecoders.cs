@@ -42,7 +42,7 @@ public sealed class FocusChangedDecoder : IPacketDecoder<FocusChangedMessage>
 /// </summary>
 public sealed class CameraMovedDecoder : IPacketDecoder<CameraMovedMessage>
 {
-    public IReadOnlyList<string> PacketNames { get; } = ["CameraMoved", "SettingsButton"];
+    public IReadOnlyList<string> PacketNames { get; } = ["CameraMoved"];
 
     public CameraMovedMessage Decode(string packetName, ReadOnlySpan<byte> data)
     {
@@ -71,5 +71,23 @@ public sealed class MouseClickDecoder : IPacketDecoder<MouseClickMessage>
         int y = coords & 0xFFFF;
         bool rightClick = (info & 1) != 0;
         return new MouseClickMessage(x, y, rightClick);
+    }
+}
+
+/// <summary>
+/// Decodes settings button clicks (opcode 165).
+/// Legacy Java: readDWord_v2 — encodes setting ID + value.
+/// </summary>
+public sealed class SettingsButtonDecoder : IPacketDecoder<SettingsButtonMessage>
+{
+    public IReadOnlyList<string> PacketNames { get; } = ["SettingsButton"];
+
+    public SettingsButtonMessage Decode(string packetName, ReadOnlySpan<byte> data)
+    {
+        var reader = new PacketReader(data);
+        int value = reader.ReadInt();
+        int settingId = (value >> 16) & 0xFFFF;
+        int settingValue = value & 0xFFFF;
+        return new SettingsButtonMessage(settingId, settingValue);
     }
 }

@@ -66,6 +66,26 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IPacketDecoder, IdleLogoutDecoder>();
         services.AddSingleton<IPacketDecoder, RegionLoadedDecoder>();
         services.AddSingleton<IPacketDecoder, FocusChangedDecoder>();
+        services.AddSingleton<IPacketDecoder, NpcAttackDecoder>();
+        services.AddSingleton<IPacketDecoder, ItemOnItemDecoder>();
+        services.AddSingleton<IPacketDecoder, ItemOnNpcDecoder>();
+        services.AddSingleton<IPacketDecoder, ItemOnObjectDecoder>();
+        services.AddSingleton<IPacketDecoder, ItemOnPlayerDecoder>();
+        services.AddSingleton<IPacketDecoder, ItemOperateDecoder>();
+        services.AddSingleton<IPacketDecoder, ItemOption1Decoder>();
+        services.AddSingleton<IPacketDecoder, ItemOption2Decoder>();
+        services.AddSingleton<IPacketDecoder, ItemSelectDecoder>();
+        services.AddSingleton<IPacketDecoder, MoveItemExtendedDecoder>();
+        services.AddSingleton<IPacketDecoder, ExamineItemDecoder>();
+        services.AddSingleton<IPacketDecoder, ExamineNpcDecoder>();
+        services.AddSingleton<IPacketDecoder, ExamineObjectDecoder>();
+        services.AddSingleton<IPacketDecoder, MagicOnNpcDecoder>();
+        services.AddSingleton<IPacketDecoder, MagicOnPlayerDecoder>();
+        services.AddSingleton<IPacketDecoder, MagicOnItemDecoder>();
+        services.AddSingleton<IPacketDecoder, NumberInputDecoder>();
+        services.AddSingleton<IPacketDecoder, StringInputDecoder>();
+        services.AddSingleton<IPacketDecoder, LongInputDecoder>();
+        services.AddSingleton<IPacketDecoder, SettingsButtonDecoder>();
 
         // PacketRouter — built once at startup from all registered decoders
         services.AddSingleton<PacketRouter>(sp =>
@@ -101,6 +121,31 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IMessageHandler<AddIgnoreMessage>, AddIgnoreHandler>();
         services.AddScoped<IMessageHandler<RemoveIgnoreMessage>, RemoveIgnoreHandler>();
         services.AddScoped<IMessageHandler<PrivateMessageMessage>, PrivateMessageHandler>();
+
+        // Examine handlers
+        services.AddScoped<IMessageHandler<ExamineItemMessage>, ExamineItemHandler>();
+        services.AddScoped<IMessageHandler<ExamineNpcMessage>, ExamineNpcHandler>();
+        services.AddScoped<IMessageHandler<ExamineObjectMessage>, ExamineObjectHandler>();
+
+        // Magic handlers
+        services.AddScoped<IMessageHandler<MagicOnNpcMessage>, MagicOnNpcHandler>();
+        services.AddScoped<IMessageHandler<MagicOnPlayerMessage>, MagicOnPlayerHandler>();
+        services.AddScoped<IMessageHandler<MagicOnItemMessage>, MagicOnItemHandler>();
+
+        // Item option handlers
+        services.AddScoped<IMessageHandler<ItemOperateMessage>, ItemOperateHandler>();
+        services.AddScoped<IMessageHandler<ItemOption1Message>, ItemOption1Handler>();
+        services.AddScoped<IMessageHandler<ItemOption2Message>, ItemOption2Handler>();
+        services.AddScoped<IMessageHandler<ItemSelectMessage>, ItemSelectHandler>();
+        services.AddScoped<IMessageHandler<SwitchItemExtendedMessage>, MoveItemExtendedHandler>();
+
+        // Input handlers
+        services.AddScoped<IMessageHandler<NumberInputMessage>, NumberInputHandler>();
+        services.AddScoped<IMessageHandler<StringInputMessage>, StringInputHandler>();
+        services.AddScoped<IMessageHandler<LongInputMessage>, LongInputHandler>();
+
+        // Settings handler
+        services.AddScoped<IMessageHandler<SettingsButtonMessage>, SettingsButtonHandler>();
 
         return services;
     }
