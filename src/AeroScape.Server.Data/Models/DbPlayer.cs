@@ -35,11 +35,9 @@ public sealed class DbPlayer
     public int RunEnergy { get; set; } = 100;
     public bool IsRunning { get; set; }
 
-    // Navigation properties
+    // Single navigation for all items — filtered by ContainerType in queries
+    public ICollection<DbItem> Items { get; set; } = new List<DbItem>();
     public ICollection<DbSkill> Skills { get; set; } = new List<DbSkill>();
-    public ICollection<DbItem> InventoryItems { get; set; } = new List<DbItem>();
-    public ICollection<DbItem> EquipmentItems { get; set; } = new List<DbItem>();
-    public ICollection<DbItem> BankItems { get; set; } = new List<DbItem>();
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime LastLogin { get; set; } = DateTime.UtcNow;

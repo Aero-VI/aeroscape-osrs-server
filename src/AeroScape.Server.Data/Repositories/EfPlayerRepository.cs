@@ -9,10 +9,6 @@ using Microsoft.Extensions.Logging;
 
 namespace AeroScape.Server.Data.Repositories;
 
-/// <summary>
-/// EF Core implementation of IPlayerRepository.
-/// Maps between the core Player entity and the DB models.
-/// </summary>
 public sealed class EfPlayerRepository : IPlayerRepository
 {
     private readonly AeroScapeDbContext _db;
@@ -47,14 +43,13 @@ public sealed class EfPlayerRepository : IPlayerRepository
         _db.Players.Add(dbPlayer);
         await _db.SaveChangesAsync(ct);
 
-        // Create default skills
         for (int i = 0; i < SkillSet.SkillCount; i++)
         {
             _db.Skills.Add(new DbSkill
             {
                 PlayerId = dbPlayer.Id,
                 SkillId = i,
-                Level = i == 3 ? 10 : 1, // Hitpoints starts at 10
+                Level = i == 3 ? 10 : 1,
                 Experience = i == 3 ? 1184 : 0
             });
         }
@@ -67,9 +62,7 @@ public sealed class EfPlayerRepository : IPlayerRepository
     {
         var dbPlayer = await _db.Players
             .Include(p => p.Skills)
-            .Include(p => p.InventoryItems)
-            .Include(p => p.EquipmentItems)
-            .Include(p => p.BankItems)
+            .Include(p => p.Items)
             .FirstOrDefaultAsync(p => p.Username == username, ct);
 
         if (dbPlayer is null) return null;
@@ -77,7 +70,7 @@ public sealed class EfPlayerRepository : IPlayerRepository
         var player = new Player
         {
             Username = dbPlayer.Username,
-            Password = "", // Don't expose password hash to game layer
+            Password = "",
             Rights = dbPlayer.Rights,
             Position = new Position(dbPlayer.PositionX, dbPlayer.PositionY, dbPlayer.PositionZ),
             RunEnergy = dbPlayer.RunEnergy,
@@ -90,24 +83,23 @@ public sealed class EfPlayerRepository : IPlayerRepository
             }
         };
 
-        // Load skills
         foreach (var skill in dbPlayer.Skills)
         {
             player.Skills.SetLevel(skill.SkillId, skill.Level);
             player.Skills.SetExperience(skill.SkillId, skill.Experience);
         }
 
-        // Load inventory
-        foreach (var item in dbPlayer.InventoryItems.Where(i => i.ContainerType == ItemContainerType.Inventory))
-            player.Inventory.Set(item.Slot, new Item(item.ItemId, item.Amount));
-
-        // Load equipment
-        foreach (var item in dbPlayer.EquipmentItems.Where(i => i.ContainerType == ItemContainerType.Equipment))
-            player.Equipment.Set(item.Slot, new Item(item.ItemId, item.Amount));
-
-        // Load bank
-        foreach (var item in dbPlayer.BankItems.Where(i => i.ContainerType == ItemContainerType.Bank))
-            player.Bank.Set(item.Slot, new Item(item.ItemId, item.Amount));
+        foreach (var item in dbPlayer.Items)
+        {
+            var container = item.ContainerType switch
+            {
+                ItemContainerType.Inventory => player.Inventory,
+                ItemContainerType.Equipment => player.Equipment,
+                ItemContainerType.Bank => player.Bank,
+                _ => null
+            };
+            container?.Set(item.Slot, new Item(item.ItemId, item.Amount));
+        }
 
         dbPlayer.LastLogin = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
@@ -120,38 +112,28 @@ public sealed class EfPlayerRepository : IPlayerRepository
     {
         var dbPlayer = await _db.Players
             .Include(p => p.Skills)
-            .Include(p => p.InventoryItems)
-            .Include(p => p.EquipmentItems)
-            .Include(p => p.BankItems)
+            .Include(p => p.Items)
             .FirstOrDefaultAsync(p => p.Username == player.Username, ct);
 
         if (dbPlayer is null) return;
 
-        // Update position
         dbPlayer.PositionX = player.Position.X;
         dbPlayer.PositionY = player.Position.Y;
         dbPlayer.PositionZ = player.Position.Z;
         dbPlayer.RunEnergy = player.RunEnergy;
         dbPlayer.IsRunning = player.IsRunning;
         dbPlayer.Rights = player.Rights;
-
-        // Update appearance
         dbPlayer.Gender = player.Appearance.Gender;
         dbPlayer.LookJson = JsonSerializer.Serialize(player.Appearance.Look);
         dbPlayer.ColorsJson = JsonSerializer.Serialize(player.Appearance.Colors);
 
-        // Sync skills
         foreach (var dbSkill in dbPlayer.Skills)
         {
             dbSkill.Level = player.Skills.GetLevel(dbSkill.SkillId);
             dbSkill.Experience = player.Skills.GetExperience(dbSkill.SkillId);
         }
 
-        // Sync inventory — clear and re-add
-        _db.Items.RemoveRange(dbPlayer.InventoryItems);
-        _db.Items.RemoveRange(dbPlayer.EquipmentItems);
-        _db.Items.RemoveRange(dbPlayer.BankItems);
-
+        _db.Items.RemoveRange(dbPlayer.Items);
         SaveContainer(dbPlayer.Id, player.Inventory, ItemContainerType.Inventory);
         SaveContainer(dbPlayer.Id, player.Equipment, ItemContainerType.Equipment);
         SaveContainer(dbPlayer.Id, player.Bank, ItemContainerType.Bank);

@@ -22,17 +22,7 @@ public sealed class AeroScapeDbContext : DbContext
                 .HasForeignKey(s => s.PlayerId)
                 .OnDelete(DeleteBehavior.Cascade);
 
-            entity.HasMany(e => e.InventoryItems)
-                .WithOne(i => i.Player)
-                .HasForeignKey(i => i.PlayerId)
-                .OnDelete(DeleteBehavior.Cascade);
-
-            entity.HasMany(e => e.EquipmentItems)
-                .WithOne(i => i.Player)
-                .HasForeignKey(i => i.PlayerId)
-                .OnDelete(DeleteBehavior.Cascade);
-
-            entity.HasMany(e => e.BankItems)
+            entity.HasMany(e => e.Items)
                 .WithOne(i => i.Player)
                 .HasForeignKey(i => i.PlayerId)
                 .OnDelete(DeleteBehavior.Cascade);
