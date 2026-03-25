@@ -383,12 +383,13 @@ public sealed class ConnectionPipeline
         
         try
         {
-            // Access socket through reflection or make it accessible
-            // For now, we read through the session's socket field
-            // TODO: Refactor to expose ReceiveAsync on session
-            return 0; // Placeholder — see PacketLoop below
+            return await session.Socket.ReceiveAsync(buffer.AsMemory(), SocketFlags.None, cts.Token);
         }
         catch (OperationCanceledException)
+        {
+            return 0;
+        }
+        catch (SocketException)
         {
             return 0;
         }

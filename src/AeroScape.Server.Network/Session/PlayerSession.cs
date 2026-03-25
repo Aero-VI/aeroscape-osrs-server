@@ -23,6 +23,9 @@ public sealed class PlayerSession : IPlayerSession, IDisposable
     public IsaacRandom? OutgoingCipher { get; set; }
 
     public bool IsConnected => !_disposed && _socket.Connected;
+    
+    /// <summary>Exposed for the connection pipeline's packet read loop.</summary>
+    internal Socket Socket => _socket;
 
     public PlayerSession(int sessionId, Socket socket, Player player)
     {
