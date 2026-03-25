@@ -1,5 +1,6 @@
 using AeroScape.Server.Core.Interfaces;
 using AeroScape.Server.Core.Messages;
+using AeroScape.Server.Network.Session;
 
 namespace AeroScape.Server.Network.Handlers;
 
@@ -34,7 +35,8 @@ public sealed class CloseInterfaceHandler : IMessageHandler<CloseInterfaceMessag
 {
     public ValueTask HandleAsync(IPlayerSession session, CloseInterfaceMessage message, CancellationToken ct)
     {
-        // TODO: Clear any open interface state on the player
+        if (session is PlayerSession ps)
+            ps.Player.OpenInterfaceId = -1;
         return ValueTask.CompletedTask;
     }
 }

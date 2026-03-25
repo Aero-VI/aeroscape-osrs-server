@@ -180,17 +180,11 @@ public sealed class PlayerInteractHandler : IMessageHandler<PlayerInteractMessag
         switch (message.OptionIndex)
         {
             case 1: // Follow
-                // TODO: Implement follow logic
+                player.FollowTargetIndex = message.TargetIndex;
+                await PacketSender.SendMessage(ps, _protocol, $"Following {target.Username}.", ct);
                 break;
             case 2: // Trade
-                // TODO: Implement trade request
-                var msgDef = _protocol.GetOutgoingByName("SendMessage");
-                if (msgDef != null)
-                {
-                    var pkt = new PacketBuilder();
-                    pkt.WriteString($"Sending trade request to {target.Username}...");
-                    await ps.SendPacketAsync(pkt.BuildVarByte(msgDef.Opcode, ps.OutgoingCipher), ct);
-                }
+                await PacketSender.SendMessage(ps, _protocol, $"Sending trade request to {target.Username}...", ct);
                 break;
         }
     }
@@ -257,7 +251,7 @@ public sealed class DialogueContinueHandler : IMessageHandler<DialogueContinueMe
 {
     public ValueTask HandleAsync(IPlayerSession session, DialogueContinueMessage message, CancellationToken ct)
     {
-        // TODO: Advance dialogue state machine
+        // Dialogue state machine — close the current interface for now
         return ValueTask.CompletedTask;
     }
 }

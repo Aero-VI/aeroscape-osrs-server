@@ -7,7 +7,7 @@
     "PublicChat": { "opcode": 4, "size": -1 },
     "Walk": { "opcode": 39, "size": -1 },
     "WalkOnCommand": { "opcode": 77, "size": -1 },
-    "WalkMinimap": { "opcode": 215, "size": -1 },
+    "WalkMinimap": { "opcode": 98, "size": -1 },
     "Command": { "opcode": 60, "size": -1 },
     "ButtonClick": { "opcode": 185, "size": 6 },
     "EquipItem": { "opcode": 41, "size": 6 },
@@ -50,7 +50,7 @@
     "SetPlayerOption": { "opcode": 104, "size": -1 },
     "SendWeight": { "opcode": 240, "size": 2 },
     "FriendStatus": { "opcode": 221, "size": 9 },
-    "InitFriendList": { "opcode": 71, "size": 1 },
+    "InitFriendList": { "opcode": 2, "size": 1 },
     "ReceivePrivateMessage": { "opcode": 196, "size": -1 },
     "SendFriendServer": { "opcode": 50, "size": 9 }
   }

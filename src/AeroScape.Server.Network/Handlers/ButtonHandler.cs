@@ -46,7 +46,8 @@ public sealed class ButtonHandler : IMessageHandler<ButtonClickMessage>
 
             // Auto-retaliate toggle (attack tab)  
             case 2423:
-                // TODO: Toggle auto-retaliate
+                player.AutoRetaliate = !player.AutoRetaliate;
+                await PacketSender.SendConfig(ps, _protocol, 172, player.AutoRetaliate ? 1 : 0, ct);
                 break;
 
             // Brightness settings

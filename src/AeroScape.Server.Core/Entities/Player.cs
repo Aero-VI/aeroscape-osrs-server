@@ -41,6 +41,13 @@ public sealed class Player
     public int RunEnergy { get; set; } = 100;
     public bool EnergyChanged { get; set; }
     
+    // Combat
+    public bool AutoRetaliate { get; set; } = true;
+    public int? FollowTargetIndex { get; set; }
+    
+    // Interface state
+    public int OpenInterfaceId { get; set; } = -1;
+    
     // Flags
     public bool IsActive { get; set; }
     
