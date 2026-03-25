@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/AeroScape.Server.App/AeroScape.Server.App.csproj" />
+    <Project Path="src/AeroScape.Server.Core/AeroScape.Server.Core.csproj" />
+    <Project Path="src/AeroScape.Server.Data/AeroScape.Server.Data.csproj" />
+    <Project Path="src/AeroScape.Server.Network/AeroScape.Server.Network.csproj" />
+  </Folder>
+</Solution>
