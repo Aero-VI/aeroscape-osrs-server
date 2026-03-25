@@ -23,16 +23,16 @@ public sealed class LoginResult
 }
 
 /// <summary>
-/// Handles the RS2 login protocol:
-///   1. Exchange seeds (server → client: 8 junk bytes + 8-byte server seed)
-///   2. Read login block (type, encrypted block with credentials + ISAAC seed)
-///   3. Validate credentials (auto-register if new)
-///   4. Build ISAAC ciphers, register player in world, create session
-///   5. Send login response code
+/// Handles the RS2 508 login protocol:
+///   1. Read name-hash byte (client sends it after opcode 14)
+///   2. Send server seed response: [0x00] + [8 zero bytes] + [8-byte server seed]
+///   3. Read login type (16=normal, 18=reconnect) + 2-byte block size
+///   4. Read full login block: version, display info, CRC keys, encrypted credentials
+///   5. Validate credentials (auto-register if new)
+///   6. Build ISAAC ciphers, register player in world, create session
+///   7. Send 9-byte login response
 ///
-/// Extracted from ConnectionPipeline to keep login logic isolated and testable.
-/// The pipeline calls <see cref="HandleAsync"/> and receives a fully formed
-/// <see cref="LoginResult"/> (or null on failure) — no raw socket work leaks out.
+/// Matches legacy Java server (DavidScape Login.java) byte-for-byte.
 /// </summary>
 public sealed class LoginHandler
 {
@@ -41,6 +41,17 @@ public sealed class LoginHandler
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ItemDefinitionService _itemDefs;
     private readonly ILogger<LoginHandler> _logger;
+
+    /// <summary>
+    /// RS2 base-37 character set for long↔string username encoding.
+    /// </summary>
+    private static readonly char[] ValidChars =
+    [
+        '_', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i',
+        'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's',
+        't', 'u', 'v', 'w', 'x', 'y', 'z', '0', '1', '2',
+        '3', '4', '5', '6', '7', '8', '9'
+    ];
 
     public LoginHandler(
         PlayerSessionManager sessionManager,
@@ -57,62 +68,124 @@ public sealed class LoginHandler
     }
 
     /// <summary>
-    /// Runs the full login handshake on a raw socket.
+    /// Runs the full 508 login handshake on a raw socket.
     /// Returns a <see cref="LoginResult"/> on success, or null if login was rejected.
+    ///
+    /// The ConnectionPipeline has already consumed the service byte (14).
     /// </summary>
     public async Task<LoginResult?> HandleAsync(Socket socket, CancellationToken ct)
     {
         var buffer = new byte[512];
 
-        // --- Step 1: Send server seed ---
-        var response = new byte[17];
-        response[0] = 0; // exchange byte
-        var serverSeed = Random.Shared.NextInt64();
-        BinaryPrimitives.WriteInt64BigEndian(response.AsSpan(9), serverSeed);
-        await socket.SendAsync(response, SocketFlags.None, ct);
+        // --- Step 0: Read the name-hash byte (client sends it with opcode 14) ---
+        int read = await socket.ReceiveAsync(buffer.AsMemory(0, 1), SocketFlags.None, ct);
+        if (read == 0) return null;
+        // Name hash byte is unused but must be consumed.
 
-        // --- Step 2: Read login type + block size ---
-        int read = await socket.ReceiveAsync(buffer.AsMemory(0, 2), SocketFlags.None, ct);
-        if (read < 2) return null;
+        // --- Step 1: Send server seed ---
+        // Format: 1 byte (0) + 8 zero bytes + 8-byte server seed = 17 bytes
+        var seedResponse = new byte[17];
+        seedResponse[0] = 0; // exchange byte
+        var serverSeed = Random.Shared.NextInt64();
+        BinaryPrimitives.WriteInt64BigEndian(seedResponse.AsSpan(9), serverSeed);
+        await socket.SendAsync(seedResponse, SocketFlags.None, ct);
+
+        // --- Step 2: Read login type (1 byte) + block size (2 bytes) ---
+        read = await ReadExactAsync(socket, buffer, 0, 3, ct);
+        if (read < 3) return null;
 
         int loginType = buffer[0];
-        int loginSize = buffer[1];
+        int loginPacketSize = (buffer[1] << 8) | buffer[2];
 
-        // Read full login block
-        int totalRead = 0;
-        while (totalRead < loginSize)
+        if (loginType != 16 && loginType != 18)
         {
-            read = await socket.ReceiveAsync(buffer.AsMemory(totalRead, loginSize - totalRead), SocketFlags.None, ct);
-            if (read == 0) return null;
-            totalRead += read;
+            _logger.LogWarning("Unexpected login type: {Type}", loginType);
+            return null;
         }
 
-        // --- Step 3: Parse the login block ---
-        var reader = new PacketReader(buffer.AsSpan(0, loginSize));
+        if (loginPacketSize <= 0 || loginPacketSize > 500)
+        {
+            _logger.LogWarning("Invalid login packet size: {Size}", loginPacketSize);
+            return null;
+        }
 
-        int magicByte = reader.ReadByte();
-        int clientVersion = reader.ReadShort();
-        int lowMemory = reader.ReadByte();
+        // Read full login block
+        int totalRead = await ReadExactAsync(socket, buffer, 0, loginPacketSize, ct);
+        if (totalRead < loginPacketSize) return null;
 
-        // Skip CRC keys (9 ints)
-        for (int i = 0; i < 9; i++)
+        // --- Step 3: Parse the 508 login block ---
+        var reader = new PacketReader(buffer.AsSpan(0, loginPacketSize));
+
+        // Client version (4 bytes)
+        int clientVersion = reader.ReadInt();
+        if (clientVersion != ServerConstants.Revision)
+        {
+            _logger.LogWarning("Client version mismatch: {ClientVer} != {ServerVer}",
+                clientVersion, ServerConstants.Revision);
+            // Allow it through — the legacy server accepted 508, 800, and 900
+        }
+
+        // Display settings
+        reader.ReadByte();   // low memory / HD flag
+        reader.ReadUShort(); // screen width
+        reader.ReadUShort(); // screen height
+        reader.ReadUShort(); // display setting
+
+        // Cache CRC indices (24 bytes)
+        for (int i = 0; i < 24; i++)
+            reader.ReadByte();
+
+        // Junk string (settings/junk data from client)
+        reader.ReadString();
+
+        // 29 ints (junk / anti-cheat / machine info)
+        for (int i = 0; i < 29; i++)
             reader.ReadInt();
 
-        int encSize = reader.ReadByte();
-        int rsaMagic = reader.ReadByte(); // should be 10
+        // Encrypted block marker
+        // loginEncryptPacketSize is decremented, then we read the RSA/encryption byte
+        int encryptionByte = reader.ReadByte();
 
-        int clientSeedHi = reader.ReadInt();
-        int clientSeedLo = reader.ReadInt();
+        bool usingHD = encryptionByte == 10;
+
+        // The encryption byte should be 10 (RSA magic) or 64
+        // If it's neither, the next byte is the actual RSA magic
+        if (encryptionByte != 10 && encryptionByte != 64)
+        {
+            encryptionByte = reader.ReadByte();
+        }
+
+        if (encryptionByte != 10 && encryptionByte != 64)
+        {
+            _logger.LogWarning("Invalid RSA magic byte: {Byte}", encryptionByte);
+            return null;
+        }
+
+        // Client session key (8 bytes)
+        long clientSessionKey = reader.ReadLong();
+
+        // Server session key (8 bytes) — should match what we sent
         long reportedServerSeed = reader.ReadLong();
 
-        int uid = reader.ReadInt();
-        string username = reader.ReadString().Trim().ToLowerInvariant();
+        // Username encoded as a long (RS2 base-37 encoding, 8 bytes)
+        long usernameLong = reader.ReadLong();
+        string username = LongToString(usernameLong).ToLowerInvariant().Replace('_', ' ').Trim();
+
+        // Password (null-terminated string)
         string password = reader.ReadString().Trim();
 
-        _logger.LogInformation("Login attempt: {Username} (type={Type}, rev={Rev})",
-            username, loginType, clientVersion);
+        if (string.IsNullOrEmpty(username))
+        {
+            _logger.LogWarning("Empty username in login block");
+            return null;
+        }
+
+        _logger.LogInformation("Login attempt: {Username} (type={Type}, rev={Rev}, hd={HD})",
+            username, loginType, clientVersion, usingHD);
 
         // --- Step 4: Build ISAAC ciphers ---
+        int clientSeedHi = (int)(clientSessionKey >> 32);
+        int clientSeedLo = (int)clientSessionKey;
         int[] isaacSeed =
         [
             clientSeedHi, clientSeedLo,
@@ -130,7 +203,10 @@ public sealed class LoginHandler
 
         if (responseCode != ServerConstants.LoginSuccess)
         {
-            await socket.SendAsync(new byte[] { (byte)responseCode }, SocketFlags.None, ct);
+            // Even on failure, send the full 9-byte response the client expects
+            var failResponse = new byte[9];
+            failResponse[0] = (byte)responseCode;
+            await socket.SendAsync(failResponse, SocketFlags.None, ct);
             return null;
         }
 
@@ -148,15 +224,25 @@ public sealed class LoginHandler
         int index = _world.Register(player);
         if (index == -1)
         {
-            await socket.SendAsync(new byte[] { (byte)ServerConstants.LoginWorldFull }, SocketFlags.None, ct);
+            var fullResponse = new byte[9];
+            fullResponse[0] = (byte)ServerConstants.LoginWorldFull;
+            await socket.SendAsync(fullResponse, SocketFlags.None, ct);
             return null;
         }
 
-        // --- Step 8: Send login response ---
-        var loginResponse = new byte[3];
-        loginResponse[0] = (byte)ServerConstants.LoginSuccess;
-        loginResponse[1] = (byte)player.Rights;
-        loginResponse[2] = 0; // flagged
+        // --- Step 8: Send 9-byte login response ---
+        // Matches the legacy Java server exactly:
+        //   [returnCode:1][rights:1][0:1][0:1][0:1][1:1][0:1][playerId:1][0:1]
+        var loginResponse = new byte[9];
+        loginResponse[0] = (byte)ServerConstants.LoginSuccess;  // return code
+        loginResponse[1] = (byte)player.Rights;                  // player rights
+        loginResponse[2] = 0;                                    // flagged
+        loginResponse[3] = 0;
+        loginResponse[4] = 0;
+        loginResponse[5] = 1;                                    // members flag
+        loginResponse[6] = 0;
+        loginResponse[7] = (byte)index;                          // player index
+        loginResponse[8] = 0;
         await socket.SendAsync(loginResponse, SocketFlags.None, ct);
 
         // --- Step 9: Create session ---
@@ -176,6 +262,50 @@ public sealed class LoginHandler
             Player = player,
             Session = session
         };
+    }
+
+    /// <summary>
+    /// Reads exactly <paramref name="count"/> bytes from the socket.
+    /// Returns the number of bytes actually read.
+    /// </summary>
+    private static async Task<int> ReadExactAsync(Socket socket, byte[] buffer, int offset, int count, CancellationToken ct)
+    {
+        int totalRead = 0;
+        while (totalRead < count)
+        {
+            int n = await socket.ReceiveAsync(
+                buffer.AsMemory(offset + totalRead, count - totalRead),
+                SocketFlags.None, ct);
+            if (n == 0) return totalRead;
+            totalRead += n;
+        }
+        return totalRead;
+    }
+
+    /// <summary>
+    /// Converts an RS2 base-37 encoded long to a string.
+    /// This is the standard RuneScape username encoding used in revision 508.
+    /// </summary>
+    private static string LongToString(long value)
+    {
+        if (value <= 0 || value >= 0x5B5B57F8A98A5DD1L)
+            return "invalid";
+
+        var chars = new char[12];
+        int pos = 12;
+
+        while (value != 0)
+        {
+            long prev = value;
+            value /= 37;
+            int charIndex = (int)(prev - value * 37);
+            if (charIndex < ValidChars.Length)
+                chars[--pos] = ValidChars[charIndex];
+            else
+                chars[--pos] = '?';
+        }
+
+        return new string(chars, pos, 12 - pos);
     }
 
     private async Task<int> ValidateCredentialsAsync(IPlayerRepository playerRepo, string username, string password, CancellationToken ct)
