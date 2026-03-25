@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="AeroScape.Server.App/AeroScape.Server.App.csproj" />
+  <Project Path="AeroScape.Server.Core/AeroScape.Server.Core.csproj" />
+  <Project Path="AeroScape.Server.Data/AeroScape.Server.Data.csproj" />
+  <Project Path="AeroScape.Server.Network/AeroScape.Server.Network.csproj" />
+</Solution>

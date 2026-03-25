@@ -2,36 +2,88 @@
   "revision": 508,
   "incoming": {
     "KeepAlive": { "opcode": 0, "size": 0 },
-    "IdleLogout": { "opcode": 1, "size": 0 },
+    "IdleLogout": { "opcode": 47, "size": 0 },
     "FocusChanged": { "opcode": 3, "size": 1 },
-    "PublicChat": { "opcode": 4, "size": -1 },
-    "Walk": { "opcode": 39, "size": -1 },
-    "WalkOnCommand": { "opcode": 77, "size": -1 },
-    "WalkMinimap": { "opcode": 98, "size": -1 },
-    "Command": { "opcode": 60, "size": -1 },
-    "ButtonClick": { "opcode": 185, "size": 6 },
-    "EquipItem": { "opcode": 41, "size": 6 },
-    "UnequipItem": { "opcode": 145, "size": 6 },
-    "MoveItem": { "opcode": 214, "size": 7 },
-    "DropItem": { "opcode": 87, "size": 6 },
-    "NpcInteract1": { "opcode": 155, "size": 2 },
-    "NpcInteract2": { "opcode": 17, "size": 2 },
-    "ObjectInteract1": { "opcode": 132, "size": 6 },
-    "ObjectInteract2": { "opcode": 252, "size": 6 },
-    "PlayerInteract1": { "opcode": 128, "size": 2 },
-    "PlayerInteract2": { "opcode": 153, "size": 2 },
-    "DialogueContinue": { "opcode": 40, "size": 6 },
-    "CloseInterface": { "opcode": 130, "size": 0 },
+    "PublicChat": { "opcode": 222, "size": -1 },
+    "Walk": { "opcode": 49, "size": -1 },
+    "WalkOnCommand": { "opcode": 119, "size": -1 },
+    "WalkMinimap": { "opcode": 138, "size": -1 },
+    "Command": { "opcode": 107, "size": -1 },
+
+    "ButtonClick1": { "opcode": 233, "size": 6 },
+    "ButtonClick2": { "opcode": 113, "size": 6 },
+    "ButtonClick3": { "opcode": 21, "size": 6 },
+    "ButtonClick4": { "opcode": 169, "size": 6 },
+    "ButtonClick5": { "opcode": 232, "size": 6 },
+    "ButtonClick6": { "opcode": 173, "size": 6 },
+
+    "EquipItem": { "opcode": 3, "size": -1 },
+    "ItemOption1": { "opcode": 203, "size": 8 },
+    "ItemOption1Alt": { "opcode": 152, "size": 8 },
+    "ItemOption2": { "opcode": 186, "size": 8 },
+    "ItemSelect": { "opcode": 220, "size": 8 },
+    "ItemSelectAlt": { "opcode": 134, "size": 8 },
+    "DropItem": { "opcode": 211, "size": 8 },
+    "ItemOperate": { "opcode": 186, "size": 8 },
+
+    "MoveItem": { "opcode": 167, "size": -1 },
+    "MoveItemExtended": { "opcode": 179, "size": -1 },
+
+    "ItemOnItem": { "opcode": 40, "size": -1 },
+    "ItemOnObject": { "opcode": 224, "size": -1 },
+    "ItemOnNpc": { "opcode": 131, "size": 8 },
+    "ItemOnPlayer": { "opcode": 253, "size": 2 },
+
+    "NpcAttack": { "opcode": 123, "size": 2 },
+    "NpcInteract1": { "opcode": 7, "size": 2 },
+    "NpcInteract2": { "opcode": 52, "size": 2 },
+    "NpcInteract3": { "opcode": 199, "size": 2 },
+
+    "ObjectInteract1": { "opcode": 158, "size": 6 },
+    "ObjectInteract2": { "opcode": 228, "size": 6 },
+    "ObjectBuild": { "opcode": 190, "size": 6 },
+
+    "PlayerInteract1": { "opcode": 160, "size": 2 },
+    "PlayerInteract2": { "opcode": 37, "size": 2 },
+    "PlayerInteract3": { "opcode": 227, "size": 2 },
+
+    "GroundItemInteract": { "opcode": 201, "size": 6 },
+
+    "MagicOnNpc": { "opcode": 24, "size": 6 },
+    "MagicOnPlayer": { "opcode": 70, "size": 8 },
+    "MagicOnItem": { "opcode": 154, "size": -1 },
+
+    "DialogueContinue": { "opcode": 63, "size": 0 },
+    "CloseInterface": { "opcode": 108, "size": 0 },
+
     "AppearanceUpdate": { "opcode": 101, "size": -1 },
-    "RegionLoaded": { "opcode": 121, "size": 0 },
-    "CameraMoved": { "opcode": 86, "size": 4 },
-    "MouseClick": { "opcode": 241, "size": 6 },
-    "GroundItemInteract": { "opcode": 236, "size": 6 },
-    "AddFriend": { "opcode": 188, "size": 8 },
-    "RemoveFriend": { "opcode": 215, "size": 8 },
-    "AddIgnore": { "opcode": 133, "size": 8 },
-    "RemoveIgnore": { "opcode": 74, "size": 8 },
-    "PrivateMessage": { "opcode": 126, "size": -1 }
+    "RegionLoaded": { "opcode": 62, "size": 0 },
+    "RegionLoadedAlt": { "opcode": 60, "size": 0 },
+
+    "CameraMoved": { "opcode": 165, "size": 4 },
+    "MouseClick": { "opcode": 59, "size": 6 },
+
+    "AddFriend": { "opcode": 30, "size": 8 },
+    "RemoveFriend": { "opcode": 132, "size": 8 },
+    "AddIgnore": { "opcode": 61, "size": 8 },
+    "RemoveIgnore": { "opcode": 2, "size": 8 },
+    "PrivateMessage": { "opcode": 178, "size": -1 },
+
+    "JoinClanChat": { "opcode": 42, "size": 8 },
+
+    "ExamineItem": { "opcode": 38, "size": 2 },
+    "ExamineNpc": { "opcode": 88, "size": 2 },
+    "ExamineObject": { "opcode": 84, "size": 2 },
+
+    "NumberInput": { "opcode": 43, "size": 4 },
+    "StringInput": { "opcode": 127, "size": -1 },
+    "LongInput": { "opcode": 189, "size": 8 },
+
+    "KickClanMember": { "opcode": 200, "size": 8 },
+    "TradeAccept": { "opcode": 253, "size": 2 },
+
+    "UpdateRequest": { "opcode": 22, "size": 4 },
+    "SettingsButton": { "opcode": 165, "size": 4 }
   },
   "outgoing": {
     "PlayerUpdate": { "opcode": 81, "size": -2 },

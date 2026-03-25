@@ -1,7 +1,9 @@
 using AeroScape.Server.Core.Game;
 using AeroScape.Server.Core.Interfaces;
 using AeroScape.Server.Core.Messages;
+using AeroScape.Server.Network.Decoders;
 using AeroScape.Server.Network.Handlers;
+using AeroScape.Server.Network.Login;
 using AeroScape.Server.Network.Pipeline;
 using AeroScape.Server.Network.Protocol;
 using AeroScape.Server.Network.Session;
@@ -9,6 +11,7 @@ using AeroScape.Server.Network.Js5;
 using AeroScape.Server.Network.Tcp;
 using AeroScape.Server.Network.Updating;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace AeroScape.Server.Network;
 
@@ -29,14 +32,46 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<UpdateService>();
         services.AddSingleton<IGameTickProcessor>(sp => sp.GetRequiredService<UpdateService>());
         
+        // Login handler
+        services.AddSingleton<LoginHandler>();
+        
         // TCP server
         services.AddHostedService<TcpServerService>();
 
         // Pipeline (transient — one per connection)
         services.AddTransient<ConnectionPipeline>();
-        services.AddTransient<PacketDispatcher>();
 
-        // Message handlers (scoped — resolved per packet dispatch)
+        // --- Packet Decoders (singleton — stateless byte→message transforms) ---
+        services.AddSingleton<IPacketDecoder, WalkDecoder>();
+        services.AddSingleton<IPacketDecoder, PublicChatDecoder>();
+        services.AddSingleton<IPacketDecoder, CommandDecoder>();
+        services.AddSingleton<IPacketDecoder, ButtonClickDecoder>();
+        services.AddSingleton<IPacketDecoder, DialogueContinueDecoder>();
+        services.AddSingleton<IPacketDecoder, CloseInterfaceDecoder>();
+        services.AddSingleton<IPacketDecoder, AppearanceUpdateDecoder>();
+        services.AddSingleton<IPacketDecoder, EquipItemDecoder>();
+        services.AddSingleton<IPacketDecoder, UnequipItemDecoder>();
+        services.AddSingleton<IPacketDecoder, DropItemDecoder>();
+        services.AddSingleton<IPacketDecoder, MoveItemDecoder>();
+        services.AddSingleton<IPacketDecoder, NpcInteractDecoder>();
+        services.AddSingleton<IPacketDecoder, ObjectInteractDecoder>();
+        services.AddSingleton<IPacketDecoder, PlayerInteractDecoder>();
+        services.AddSingleton<IPacketDecoder, GroundItemInteractDecoder>();
+        services.AddSingleton<IPacketDecoder, AddFriendDecoder>();
+        services.AddSingleton<IPacketDecoder, RemoveFriendDecoder>();
+        services.AddSingleton<IPacketDecoder, AddIgnoreDecoder>();
+        services.AddSingleton<IPacketDecoder, RemoveIgnoreDecoder>();
+        services.AddSingleton<IPacketDecoder, PrivateMessageDecoder>();
+        services.AddSingleton<IPacketDecoder, KeepAliveDecoder>();
+        services.AddSingleton<IPacketDecoder, IdleLogoutDecoder>();
+        services.AddSingleton<IPacketDecoder, RegionLoadedDecoder>();
+        services.AddSingleton<IPacketDecoder, FocusChangedDecoder>();
+
+        // PacketRouter — built once at startup from all registered decoders
+        services.AddSingleton<PacketRouter>(sp =>
+            PacketRouter.Build(sp, sp.GetRequiredService<ILogger<PacketRouter>>()));
+
+        // --- Message handlers (scoped — resolved per packet dispatch) ---
         services.AddScoped<IMessageHandler<WalkMessage>, WalkHandler>();
         services.AddScoped<IMessageHandler<CommandMessage>, CommandHandler>();
         services.AddScoped<IMessageHandler<PublicChatMessage>, ChatHandler>();
