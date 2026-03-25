@@ -5,6 +5,7 @@ using AeroScape.Server.Network.Handlers;
 using AeroScape.Server.Network.Pipeline;
 using AeroScape.Server.Network.Protocol;
 using AeroScape.Server.Network.Session;
+using AeroScape.Server.Network.Js5;
 using AeroScape.Server.Network.Tcp;
 using AeroScape.Server.Network.Updating;
 using Microsoft.Extensions.DependencyInjection;
@@ -17,6 +18,9 @@ public static class ServiceCollectionExtensions
     {
         // Protocol
         services.AddSingleton<ProtocolService>();
+        
+        // JS5 cache service
+        services.AddSingleton<Js5CacheService>();
         
         // Session management
         services.AddSingleton<PlayerSessionManager>();

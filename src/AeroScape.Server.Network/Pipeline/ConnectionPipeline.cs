@@ -5,6 +5,7 @@ using AeroScape.Server.Core.Crypto;
 using AeroScape.Server.Core.Entities;
 using AeroScape.Server.Core.Game;
 using AeroScape.Server.Core.Interfaces;
+using AeroScape.Server.Network.Js5;
 using AeroScape.Server.Network.Protocol;
 using AeroScape.Server.Network.Session;
 using AeroScape.Server.Network.Updating;
@@ -26,6 +27,7 @@ public sealed class ConnectionPipeline
     private readonly GameWorld _world;
     private readonly ProtocolService _protocol;
     private readonly IPlayerRepository _playerRepo;
+    private readonly Js5CacheService _js5Cache;
     private readonly ILogger<ConnectionPipeline> _logger;
 
     public ConnectionPipeline(
@@ -34,6 +36,7 @@ public sealed class ConnectionPipeline
         GameWorld world,
         ProtocolService protocol,
         IPlayerRepository playerRepo,
+        Js5CacheService js5Cache,
         ILogger<ConnectionPipeline> logger)
     {
         _serviceProvider = serviceProvider;
@@ -41,6 +44,7 @@ public sealed class ConnectionPipeline
         _world = world;
         _protocol = protocol;
         _playerRepo = playerRepo;
+        _js5Cache = js5Cache;
         _logger = logger;
     }
 
@@ -70,8 +74,8 @@ public sealed class ConnectionPipeline
 
     private async Task HandleUpdateRequestAsync(Socket socket, byte[] buffer, CancellationToken ct)
     {
-        // JS5 / cache update protocol — stub for now
-        // Read version
+        // JS5 / cache update protocol
+        // Read version (4 bytes)
         int read = await socket.ReceiveAsync(buffer.AsMemory(0, 4), SocketFlags.None, ct);
         if (read < 4) return;
 
@@ -85,8 +89,66 @@ public sealed class ConnectionPipeline
 
         await socket.SendAsync(new byte[] { 0 }, SocketFlags.None, ct); // ok
 
-        // TODO: Implement JS5 cache serving pipeline
-        _logger.LogDebug("JS5 request received — stub response sent");
+        if (!_js5Cache.IsLoaded)
+        {
+            _logger.LogWarning("JS5 request but no cache loaded — closing connection");
+            return;
+        }
+
+        // Process JS5 cache requests
+        var requestBuf = new byte[4];
+        while (!ct.IsCancellationRequested)
+        {
+            int totalRead = 0;
+            while (totalRead < 4)
+            {
+                int r = await socket.ReceiveAsync(requestBuf.AsMemory(totalRead, 4 - totalRead), SocketFlags.None, ct);
+                if (r == 0) return; // disconnected
+                totalRead += r;
+            }
+
+            byte opcode = requestBuf[0];
+
+            // Handle JS5 state notifications
+            if (opcode == 2 || opcode == 3)
+            {
+                // Login state notification — no response needed
+                continue;
+            }
+
+            if (opcode == 4)
+            {
+                // Encryption key notification — read remaining 12 bytes
+                var xteaBuf = new byte[12];
+                int xteaRead = 0;
+                while (xteaRead < 12)
+                {
+                    int r = await socket.ReceiveAsync(xteaBuf.AsMemory(xteaRead, 12 - xteaRead), SocketFlags.None, ct);
+                    if (r == 0) return;
+                    xteaRead += r;
+                }
+                continue;
+            }
+
+            if (opcode != 0 && opcode != 1)
+            {
+                _logger.LogTrace("JS5 unknown opcode {Opcode}", opcode);
+                continue;
+            }
+
+            int index = requestBuf[1];
+            int archive = (requestBuf[2] << 8) | requestBuf[3];
+
+            var container = _js5Cache.GetContainer(index, archive);
+            if (container == null || container.Length == 0)
+            {
+                _logger.LogTrace("JS5 no data for index={Index} archive={Archive}", index, archive);
+                continue;
+            }
+
+            var response = Js5CacheService.BuildResponse(index, archive, container);
+            await socket.SendAsync(response, SocketFlags.None, ct);
+        }
     }
 
     private async Task HandleLoginAsync(Socket socket, byte[] buffer, CancellationToken ct)

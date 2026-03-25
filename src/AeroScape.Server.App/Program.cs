@@ -24,6 +24,7 @@ try
     builder.Services.AddSingleton<GameWorld>();
     builder.Services.AddSingleton<ItemDefinitionService>();
     builder.Services.AddSingleton<NpcSpawnLoader>();
+    builder.Services.AddSingleton<TradeManager>();
     builder.Services.AddHostedService<GameEngine>();
 
     // Network layer
@@ -69,6 +70,25 @@ try
             "AeroScape.Server.App", "npc_spawns.json");
     }
     await npcLoader.LoadAsync(npcSpawnPath);
+
+    // Load JS5 cache (optional — for cache serving to clients)
+    var js5Cache = app.Services.GetRequiredService<AeroScape.Server.Network.Js5.Js5CacheService>();
+    var cachePaths = new[]
+    {
+        Path.Combine(AppContext.BaseDirectory, "cache"),
+        "/home/cache/rev508/cache",
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".aeroscape", "cache"),
+    };
+    foreach (var cp in cachePaths)
+    {
+        if (Directory.Exists(cp))
+        {
+            js5Cache.Load(cp);
+            break;
+        }
+    }
+    if (!js5Cache.IsLoaded)
+        Log.Warning("No JS5 cache found. Cache serving disabled. Place cache files in one of: {Paths}", string.Join(", ", cachePaths));
 
     Log.Information("AeroScape Server ready — listening on port 43594");
     await app.RunAsync();

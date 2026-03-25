@@ -63,6 +63,8 @@ public sealed class EfPlayerRepository : IPlayerRepository
         var dbPlayer = await _db.Players
             .Include(p => p.Skills)
             .Include(p => p.Items)
+            .Include(p => p.Friends)
+            .Include(p => p.Ignores)
             .FirstOrDefaultAsync(p => p.Username == username, ct);
 
         if (dbPlayer is null) return null;
@@ -101,6 +103,12 @@ public sealed class EfPlayerRepository : IPlayerRepository
             container?.Set(item.Slot, new Item(item.ItemId, item.Amount));
         }
 
+        // Friends and ignores
+        foreach (var friend in dbPlayer.Friends)
+            player.FriendsList.Add(friend.FriendNameLong);
+        foreach (var ignore in dbPlayer.Ignores)
+            player.IgnoreList.Add(ignore.IgnoreNameLong);
+
         dbPlayer.LastLogin = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
 
@@ -113,6 +121,8 @@ public sealed class EfPlayerRepository : IPlayerRepository
         var dbPlayer = await _db.Players
             .Include(p => p.Skills)
             .Include(p => p.Items)
+            .Include(p => p.Friends)
+            .Include(p => p.Ignores)
             .FirstOrDefaultAsync(p => p.Username == player.Username, ct);
 
         if (dbPlayer is null) return;
@@ -137,6 +147,26 @@ public sealed class EfPlayerRepository : IPlayerRepository
         SaveContainer(dbPlayer.Id, player.Inventory, ItemContainerType.Inventory);
         SaveContainer(dbPlayer.Id, player.Equipment, ItemContainerType.Equipment);
         SaveContainer(dbPlayer.Id, player.Bank, ItemContainerType.Bank);
+
+        // Save friends and ignores
+        _db.Friends.RemoveRange(dbPlayer.Friends);
+        foreach (var friendLong in player.FriendsList)
+        {
+            _db.Friends.Add(new DbFriend
+            {
+                PlayerId = dbPlayer.Id,
+                FriendNameLong = friendLong
+            });
+        }
+        _db.Ignores.RemoveRange(dbPlayer.Ignores);
+        foreach (var ignoreLong in player.IgnoreList)
+        {
+            _db.Ignores.Add(new DbIgnore
+            {
+                PlayerId = dbPlayer.Id,
+                IgnoreNameLong = ignoreLong
+            });
+        }
 
         await _db.SaveChangesAsync(ct);
         _logger.LogDebug("Saved player: {Username}", player.Username);

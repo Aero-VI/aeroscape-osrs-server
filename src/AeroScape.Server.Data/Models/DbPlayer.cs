@@ -38,6 +38,8 @@ public sealed class DbPlayer
     // Single navigation for all items — filtered by ContainerType in queries
     public ICollection<DbItem> Items { get; set; } = new List<DbItem>();
     public ICollection<DbSkill> Skills { get; set; } = new List<DbSkill>();
+    public ICollection<DbFriend> Friends { get; set; } = new List<DbFriend>();
+    public ICollection<DbIgnore> Ignores { get; set; } = new List<DbIgnore>();
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime LastLogin { get; set; } = DateTime.UtcNow;
