@@ -4,6 +4,7 @@ using AeroScape.Server.Core.Interfaces;
 using AeroScape.Server.Core.Messages;
 using AeroScape.Server.Network.Protocol;
 using AeroScape.Server.Network.Session;
+using AeroScape.Server.Network.Updating;
 using Microsoft.Extensions.Logging;
 
 namespace AeroScape.Server.Network.Handlers;
@@ -14,12 +15,14 @@ namespace AeroScape.Server.Network.Handlers;
 public sealed class NpcInteractHandler : IMessageHandler<NpcInteractMessage>
 {
     private readonly GameWorld _world;
+    private readonly CombatSystem _combat;
     private readonly ProtocolService _protocol;
     private readonly ILogger<NpcInteractHandler> _logger;
 
-    public NpcInteractHandler(GameWorld world, ProtocolService protocol, ILogger<NpcInteractHandler> logger)
+    public NpcInteractHandler(GameWorld world, CombatSystem combat, ProtocolService protocol, ILogger<NpcInteractHandler> logger)
     {
         _world = world;
+        _combat = combat;
         _protocol = protocol;
         _logger = logger;
     }
@@ -42,16 +45,39 @@ public sealed class NpcInteractHandler : IMessageHandler<NpcInteractMessage>
         // Face the NPC
         player.FaceEntity(message.NpcIndex);
 
-        // TODO: Walk to NPC if not adjacent
-        // TODO: Trigger NPC dialogue/action based on option
-        
-        // For now, send a message about the interaction
-        var msgDef = _protocol.GetOutgoingByName("SendMessage");
-        if (msgDef != null)
+        switch (message.OptionIndex)
         {
-            var pkt = new PacketBuilder();
-            pkt.WriteString($"You interact with {npc.Name} (id: {npc.Id}).");
-            await ps.SendPacketAsync(pkt.BuildVarByte(msgDef.Opcode, ps.OutgoingCipher), ct);
+            case 1: // First option (Talk-to / Attack for attackable NPCs)
+                if (npc.CombatLevel > 0)
+                {
+                    // Attack
+                    _combat.AttackNpc(player, npc);
+                    player.PlayAnimation(422); // Punch animation
+                    await PacketSender.SendMessage(ps, _protocol, $"You attack the {npc.Name}.", ct);
+                }
+                else
+                {
+                    // Talk-to
+                    await PacketSender.SendMessage(ps, _protocol, $"{npc.Name}: Hello, adventurer!", ct);
+                }
+                break;
+
+            case 2: // Second option (Attack for non-combat NPCs, or secondary action)
+                if (npc.CombatLevel > 0)
+                {
+                    _combat.AttackNpc(player, npc);
+                    player.PlayAnimation(422);
+                    await PacketSender.SendMessage(ps, _protocol, $"You attack the {npc.Name}.", ct);
+                }
+                else
+                {
+                    await PacketSender.SendMessage(ps, _protocol, $"You interact with {npc.Name}.", ct);
+                }
+                break;
+
+            default:
+                await PacketSender.SendMessage(ps, _protocol, $"Nothing interesting happens.", ct);
+                break;
         }
     }
 }

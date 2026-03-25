@@ -3,6 +3,7 @@ using AeroScape.Server.Network.Protocol;
 using AeroScape.Server.Network.Session;
 using Microsoft.Extensions.Logging;
 
+// NpcMovementService is in Core.Game
 namespace AeroScape.Server.Network.Updating;
 
 /// <summary>
@@ -14,17 +15,20 @@ public sealed class UpdateService : IGameTickProcessor
     private readonly PlayerSessionManager _sessionManager;
     private readonly GameWorld _world;
     private readonly ProtocolService _protocol;
+    private readonly CombatSystem _combat;
     private readonly ILogger<UpdateService> _logger;
 
     public UpdateService(
         PlayerSessionManager sessionManager,
         GameWorld world,
         ProtocolService protocol,
+        CombatSystem combat,
         ILogger<UpdateService> logger)
     {
         _sessionManager = sessionManager;
         _world = world;
         _protocol = protocol;
+        _combat = combat;
         _logger = logger;
     }
 
@@ -35,12 +39,18 @@ public sealed class UpdateService : IGameTickProcessor
     {
         var sessions = _sessionManager.GetAll().ToList();
 
-        // Phase 1: Process movement
+        // Phase 1a: Process player movement
         foreach (var session in sessions)
         {
             if (!session.IsConnected) continue;
             session.Movement.Process(session.Player);
         }
+
+        // Phase 1b: Process NPC movement (random walking)
+        NpcMovementService.ProcessAll(_world);
+
+        // Phase 1c: Process combat
+        _combat.ProcessTick();
 
         // Phase 2: Send map region updates if needed
         foreach (var session in sessions)

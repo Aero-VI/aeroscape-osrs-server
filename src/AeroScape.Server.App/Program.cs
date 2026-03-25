@@ -25,6 +25,7 @@ try
     builder.Services.AddSingleton<ItemDefinitionService>();
     builder.Services.AddSingleton<NpcSpawnLoader>();
     builder.Services.AddSingleton<TradeManager>();
+    builder.Services.AddSingleton<CombatSystem>();
     builder.Services.AddHostedService<GameEngine>();
 
     // Network layer
