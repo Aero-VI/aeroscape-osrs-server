@@ -26,7 +26,12 @@
     "RegionLoaded": { "opcode": 121, "size": 0 },
     "CameraMoved": { "opcode": 86, "size": 4 },
     "MouseClick": { "opcode": 241, "size": 6 },
-    "GroundItemInteract": { "opcode": 236, "size": 6 }
+    "GroundItemInteract": { "opcode": 236, "size": 6 },
+    "AddFriend": { "opcode": 188, "size": 8 },
+    "RemoveFriend": { "opcode": 215, "size": 8 },
+    "AddIgnore": { "opcode": 133, "size": 8 },
+    "RemoveIgnore": { "opcode": 74, "size": 8 },
+    "PrivateMessage": { "opcode": 126, "size": -1 }
   },
   "outgoing": {
     "PlayerUpdate": { "opcode": 81, "size": -2 },
@@ -43,6 +48,10 @@
     "SystemUpdate": { "opcode": 114, "size": 2 },
     "ResetCamera": { "opcode": 107, "size": 0 },
     "SetPlayerOption": { "opcode": 104, "size": -1 },
-    "SendWeight": { "opcode": 240, "size": 2 }
+    "SendWeight": { "opcode": 240, "size": 2 },
+    "FriendStatus": { "opcode": 221, "size": 9 },
+    "InitFriendList": { "opcode": 71, "size": 1 },
+    "ReceivePrivateMessage": { "opcode": 196, "size": -1 },
+    "SendFriendServer": { "opcode": 50, "size": 9 }
   }
 }

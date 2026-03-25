@@ -24,6 +24,9 @@ public sealed class PlayerSession : IPlayerSession, IDisposable
 
     public bool IsConnected => !_disposed && _socket.Connected;
     
+    /// <summary>Reference to session manager for player update scanning.</summary>
+    public PlayerSessionManager? SessionManager { get; set; }
+    
     /// <summary>Exposed for the connection pipeline's packet read loop.</summary>
     internal Socket Socket => _socket;
 

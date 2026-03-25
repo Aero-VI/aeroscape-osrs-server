@@ -1,4 +1,5 @@
 using AeroScape.Server.Core.Constants;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -6,16 +7,16 @@ namespace AeroScape.Server.Core.Game;
 
 /// <summary>
 /// Main game loop — runs every 600ms (one game tick).
-/// Processes movement, combat, etc. for all active players.
+/// Delegates update cycle to the network layer's UpdateService.
 /// </summary>
 public sealed class GameEngine : BackgroundService
 {
-    private readonly GameWorld _world;
+    private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<GameEngine> _logger;
 
-    public GameEngine(GameWorld world, ILogger<GameEngine> logger)
+    public GameEngine(IServiceProvider serviceProvider, ILogger<GameEngine> logger)
     {
-        _world = world;
+        _serviceProvider = serviceProvider;
         _logger = logger;
     }
 
@@ -23,13 +24,17 @@ public sealed class GameEngine : BackgroundService
     {
         _logger.LogInformation("Game engine started — tick rate: {Rate}ms", ServerConstants.CycleRate);
         
+        // Resolve the update processor (registered by the network layer)
+        var tickProcessor = _serviceProvider.GetService<IGameTickProcessor>();
+        
         using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(ServerConstants.CycleRate));
 
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {
             try
             {
-                ProcessTick();
+                if (tickProcessor != null)
+                    await tickProcessor.ProcessTickAsync(stoppingToken);
             }
             catch (Exception ex)
             {
@@ -37,28 +42,13 @@ public sealed class GameEngine : BackgroundService
             }
         }
     }
+}
 
-    private void ProcessTick()
-    {
-        var players = _world.GetActivePlayers().ToList();
-
-        // Phase 1: Process movement for all players
-        foreach (var player in players)
-        {
-            // Movement is processed by the MovementHandler attached to each session
-            // TODO: Hook into session's MovementHandler.Process(player)
-        }
-
-        // Phase 2: Player updating (build update blocks)
-        // TODO: Build and send player update packets
-
-        // Phase 3: NPC updating
-        // TODO: Build and send NPC update packets
-
-        // Phase 4: Reset flags
-        foreach (var player in players)
-        {
-            player.ResetFlags();
-        }
-    }
+/// <summary>
+/// Interface for the network layer to provide tick processing without the core
+/// depending on the network layer directly.
+/// </summary>
+public interface IGameTickProcessor
+{
+    Task ProcessTickAsync(CancellationToken ct);
 }

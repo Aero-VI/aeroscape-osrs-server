@@ -1,58 +1,33 @@
 namespace AeroScape.Server.Core.Entities;
 
 /// <summary>
-/// Core player entity — protocol-agnostic game state.
-/// No knowledge of sockets, packets, or byte buffers.
+/// Core NPC entity — protocol-agnostic game state.
 /// </summary>
-public sealed class Player
+public sealed class Npc
 {
     public int Index { get; set; } = -1;
-    public string Username { get; set; } = string.Empty;
-    public string Password { get; set; } = string.Empty;
-    public int Rights { get; set; }
+    public int Id { get; set; }
+    public string Name { get; set; } = "NPC";
     
-    public Position Position { get; set; } = Position.Default;
-    public Position LastKnownRegion { get; set; } = Position.Default;
-    public bool NeedsMapRegionUpdate { get; set; } = true;
-    public bool UpdateRequired { get; set; } = true;
-    public bool AppearanceUpdateRequired { get; set; } = true;
-    public bool ChatUpdateRequired { get; set; }
-    
-    public Appearance Appearance { get; set; } = Appearance.Default;
-    public SkillSet Skills { get; } = new();
-    
-    // Inventory: 28 slots, Equipment: 14 slots
-    public ItemContainer Inventory { get; } = new(28);
-    public ItemContainer Equipment { get; } = new(14);
-    public ItemContainer Bank { get; } = new(496);
+    public Position Position { get; set; }
+    public Position SpawnPosition { get; set; }
+    public bool IsActive { get; set; }
     
     // Movement
     public int WalkDirection { get; set; } = -1;
     public int RunDirection { get; set; } = -1;
-    public bool IsRunning { get; set; }
-    public bool IsTeleporting { get; set; }
+    public bool UpdateRequired { get; set; }
     
-    // Chat
-    public int ChatColor { get; set; }
-    public int ChatEffect { get; set; }
-    public byte[]? ChatText { get; set; }
-    
-    // Energy
-    public int RunEnergy { get; set; } = 100;
-    
-    // Flags
-    public bool IsActive { get; set; }
-    
-    // Animation / Graphic update flags
+    // Update flags
     public bool AnimationUpdateRequired { get; set; }
     public bool GraphicUpdateRequired { get; set; }
     public bool ForceChatUpdateRequired { get; set; }
     public bool FaceEntityUpdateRequired { get; set; }
     public bool FaceCoordinateUpdateRequired { get; set; }
     public bool HitUpdateRequired { get; set; }
-    public bool Hit2UpdateRequired { get; set; }
+    public bool TransformUpdateRequired { get; set; }
     
-    // Animation / Graphic data
+    // Update data
     public int AnimationId { get; set; } = -1;
     public int AnimationDelay { get; set; }
     public int GraphicId { get; set; } = -1;
@@ -64,17 +39,23 @@ public sealed class Player
     public int FaceY { get; set; }
     public int HitDamage { get; set; }
     public int HitType { get; set; }
-    public int Hit2Damage { get; set; }
-    public int Hit2Type { get; set; }
+    public int CurrentHealth { get; set; } = 100;
+    public int MaxHealth { get; set; } = 100;
+    public int TransformId { get; set; } = -1;
     
-    // Friends / Ignore
-    public List<long> FriendsList { get; } = new(200);
-    public List<long> IgnoreList { get; } = new(100);
+    // Combat
+    public int CombatLevel { get; set; }
     
-    // Local player/NPC lists for update tracking
-    public List<Player> LocalPlayers { get; } = new(256);
-    public List<Npc> LocalNpcs { get; } = new(256);
+    // Walking range
+    public int WalkRadius { get; set; }
     
+    public Npc(int id, Position position)
+    {
+        Id = id;
+        Position = position;
+        SpawnPosition = position;
+    }
+
     public void PlayAnimation(int animId, int delay = 0)
     {
         AnimationId = animId;
@@ -113,23 +94,19 @@ public sealed class Player
         FaceCoordinateUpdateRequired = true;
         UpdateRequired = true;
     }
-    
+
     public void ResetFlags()
     {
         UpdateRequired = false;
-        AppearanceUpdateRequired = false;
-        ChatUpdateRequired = false;
         AnimationUpdateRequired = false;
         GraphicUpdateRequired = false;
         ForceChatUpdateRequired = false;
         FaceEntityUpdateRequired = false;
         FaceCoordinateUpdateRequired = false;
         HitUpdateRequired = false;
-        Hit2UpdateRequired = false;
+        TransformUpdateRequired = false;
         WalkDirection = -1;
         RunDirection = -1;
-        IsTeleporting = false;
-        ChatText = null;
         ForceChat = null;
     }
 }

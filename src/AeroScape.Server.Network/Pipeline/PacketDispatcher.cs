@@ -69,6 +69,24 @@ public sealed class PacketDispatcher
                     await HandleTypedAsync<ObjectInteractMessage>(session, DecodeObjectInteract(payload, objOpt), ct);
                     break;
 
+                case "PlayerInteract1":
+                case "PlayerInteract2":
+                    int playerOpt = pktDef.Name == "PlayerInteract1" ? 1 : 2;
+                    await HandleTypedAsync<PlayerInteractMessage>(session, DecodePlayerInteract(payload, playerOpt), ct);
+                    break;
+
+                case "GroundItemInteract":
+                    await HandleTypedAsync<GroundItemInteractMessage>(session, DecodeGroundItemInteract(payload), ct);
+                    break;
+
+                case "DialogueContinue":
+                    await HandleTypedAsync<DialogueContinueMessage>(session, DecodeDialogueContinue(payload), ct);
+                    break;
+
+                case "MoveItem":
+                    await HandleTypedAsync<MoveItemMessage>(session, DecodeMoveItem(payload), ct);
+                    break;
+
                 case "CloseInterface":
                     await HandleTypedAsync<CloseInterfaceMessage>(session, new CloseInterfaceMessage(), ct);
                     break;
@@ -90,7 +108,28 @@ public sealed class PacketDispatcher
                     break;
 
                 case "FocusChanged":
-                    // Ignore silently
+                    await HandleTypedAsync<FocusChangedMessage>(session, 
+                        new FocusChangedMessage(payload.Length > 0 && payload[0] == 1), ct);
+                    break;
+
+                case "AddFriend":
+                    await HandleTypedAsync<AddFriendMessage>(session, DecodeAddFriend(payload), ct);
+                    break;
+
+                case "RemoveFriend":
+                    await HandleTypedAsync<RemoveFriendMessage>(session, DecodeRemoveFriend(payload), ct);
+                    break;
+
+                case "AddIgnore":
+                    await HandleTypedAsync<AddIgnoreMessage>(session, DecodeAddIgnore(payload), ct);
+                    break;
+
+                case "RemoveIgnore":
+                    await HandleTypedAsync<RemoveIgnoreMessage>(session, DecodeRemoveIgnore(payload), ct);
+                    break;
+
+                case "PrivateMessage":
+                    await HandleTypedAsync<PrivateMessageMessage>(session, DecodePrivateMessage(payload), ct);
                     break;
 
                 case "CameraMoved":
@@ -218,5 +257,74 @@ public sealed class PacketDispatcher
         for (int i = 0; i < 5; i++)
             colors[i] = reader.ReadByte();
         return new AppearanceUpdateMessage(gender, look, colors);
+    }
+
+    private static PlayerInteractMessage DecodePlayerInteract(byte[] data, int option)
+    {
+        var reader = new PacketReader(data);
+        int index = reader.ReadShort();
+        return new PlayerInteractMessage(index, option);
+    }
+
+    private static GroundItemInteractMessage DecodeGroundItemInteract(byte[] data)
+    {
+        var reader = new PacketReader(data);
+        int itemId = reader.ReadShort();
+        int x = reader.ReadShort();
+        int y = reader.ReadShort();
+        return new GroundItemInteractMessage(itemId, x, y);
+    }
+
+    private static DialogueContinueMessage DecodeDialogueContinue(byte[] data)
+    {
+        var reader = new PacketReader(data);
+        int interfaceId = reader.ReadShort();
+        int buttonId = reader.ReadShort();
+        return new DialogueContinueMessage(interfaceId, buttonId);
+    }
+
+    private static MoveItemMessage DecodeMoveItem(byte[] data)
+    {
+        var reader = new PacketReader(data);
+        int interfaceId = reader.ReadShort();
+        int fromSlot = reader.ReadShort();
+        int toSlot = reader.ReadShort();
+        return new MoveItemMessage(interfaceId, fromSlot, toSlot);
+    }
+
+    private static AddFriendMessage DecodeAddFriend(byte[] data)
+    {
+        var reader = new PacketReader(data);
+        long nameLong = reader.ReadLong();
+        return new AddFriendMessage(nameLong);
+    }
+
+    private static RemoveFriendMessage DecodeRemoveFriend(byte[] data)
+    {
+        var reader = new PacketReader(data);
+        long nameLong = reader.ReadLong();
+        return new RemoveFriendMessage(nameLong);
+    }
+
+    private static AddIgnoreMessage DecodeAddIgnore(byte[] data)
+    {
+        var reader = new PacketReader(data);
+        long nameLong = reader.ReadLong();
+        return new AddIgnoreMessage(nameLong);
+    }
+
+    private static RemoveIgnoreMessage DecodeRemoveIgnore(byte[] data)
+    {
+        var reader = new PacketReader(data);
+        long nameLong = reader.ReadLong();
+        return new RemoveIgnoreMessage(nameLong);
+    }
+
+    private static PrivateMessageMessage DecodePrivateMessage(byte[] data)
+    {
+        var reader = new PacketReader(data);
+        long recipientLong = reader.ReadLong();
+        var text = reader.ReadBytes(reader.Remaining).ToArray();
+        return new PrivateMessageMessage(recipientLong, text);
     }
 }

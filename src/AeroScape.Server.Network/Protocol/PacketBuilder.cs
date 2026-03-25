@@ -213,5 +213,15 @@ public sealed class PacketBuilder
         return result;
     }
 
+    /// <summary>
+    /// Returns the raw payload bytes without any header.
+    /// </summary>
+    public ReadOnlyMemory<byte> BuildRaw()
+    {
+        var result = new byte[_position];
+        Buffer.BlockCopy(_buffer, 0, result, 0, _position);
+        return result;
+    }
+
     public void Reset() => _position = 0;
 }

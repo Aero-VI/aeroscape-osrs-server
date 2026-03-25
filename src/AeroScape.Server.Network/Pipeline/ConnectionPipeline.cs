@@ -7,6 +7,7 @@ using AeroScape.Server.Core.Game;
 using AeroScape.Server.Core.Interfaces;
 using AeroScape.Server.Network.Protocol;
 using AeroScape.Server.Network.Session;
+using AeroScape.Server.Network.Updating;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -203,7 +204,8 @@ public sealed class ConnectionPipeline
         var session = new PlayerSession(_sessionManager.NextSessionId(), socket, player)
         {
             IncomingCipher = incomingIsaac,
-            OutgoingCipher = outgoingIsaac
+            OutgoingCipher = outgoingIsaac,
+            SessionManager = _sessionManager
         };
         _sessionManager.Register(session);
 
@@ -231,90 +233,55 @@ public sealed class ConnectionPipeline
         var player = session.Player;
 
         // Send map region
-        var mapPkt = new PacketBuilder();
-        mapPkt.WriteShortA(player.Position.RegionX);
-        mapPkt.WriteShort(player.Position.RegionY);
-        
-        var mapDef = _protocol.GetOutgoingByName("MapRegion");
-        if (mapDef != null)
-            await session.SendPacketAsync(mapPkt.BuildVarShort(mapDef.Opcode, session.OutgoingCipher), ct);
+        await PacketSender.SendMapRegion(session, _protocol, ct);
+        player.NeedsMapRegionUpdate = false;
+        player.LastKnownRegion = player.Position;
 
         // Send sidebar interfaces (typical 508 sidebar config)
         int[] sidebarInterfaces = [
-            2423,  // Attack
-            3917,  // Skills
-            638,   // Quest
-            3213,  // Inventory
-            1644,  // Equipment
-            5608,  // Prayer
-            12855, // Magic
-            -1,    // Unused
-            5065,  // Friends
-            5715,  // Ignore
-            2449,  // Logout
-            904,   // Settings
-            147,   // Emotes
-            -1     // Music
+            2423,  // Attack (tab 0)
+            3917,  // Skills (tab 1)
+            638,   // Quest (tab 2)
+            3213,  // Inventory (tab 3)
+            1644,  // Equipment (tab 4)
+            5608,  // Prayer (tab 5)
+            12855, // Magic (tab 6)
+            -1,    // Unused (tab 7)
+            5065,  // Friends (tab 8)
+            5715,  // Ignore (tab 9)
+            2449,  // Logout (tab 10)
+            904,   // Settings (tab 11)
+            147,   // Emotes (tab 12)
+            -1     // Music (tab 13)
         ];
 
-        var sidebarDef = _protocol.GetOutgoingByName("SetSidebar");
-        if (sidebarDef != null)
+        for (int i = 0; i < sidebarInterfaces.Length; i++)
         {
-            for (int i = 0; i < sidebarInterfaces.Length; i++)
-            {
-                if (sidebarInterfaces[i] == -1) continue;
-                var pkt = new PacketBuilder();
-                pkt.WriteShort(sidebarInterfaces[i]);
-                pkt.WriteByteA(i);
-                await session.SendPacketAsync(pkt.Build(sidebarDef.Opcode, session.OutgoingCipher), ct);
-            }
+            if (sidebarInterfaces[i] == -1) continue;
+            await PacketSender.SendSidebar(session, _protocol, i, sidebarInterfaces[i], ct);
         }
 
         // Send skills
-        var skillDef = _protocol.GetOutgoingByName("SendSkill");
-        if (skillDef != null)
-        {
-            for (int i = 0; i < SkillSet.SkillCount; i++)
-            {
-                var pkt = new PacketBuilder();
-                pkt.WriteByte(i);
-                pkt.WriteInt(player.Skills.GetExperience(i));
-                pkt.WriteByte(player.Skills.GetLevel(i));
-                await session.SendPacketAsync(pkt.Build(skillDef.Opcode, session.OutgoingCipher), ct);
-            }
-        }
+        await PacketSender.SendAllSkills(session, _protocol, ct);
+
+        // Send inventory and equipment
+        await PacketSender.SendInventory(session, _protocol, ct);
+        await PacketSender.SendEquipment(session, _protocol, ct);
 
         // Send run energy
-        var energyDef = _protocol.GetOutgoingByName("SendEnergy");
-        if (energyDef != null)
-        {
-            var pkt = new PacketBuilder();
-            pkt.WriteByte(player.RunEnergy);
-            await session.SendPacketAsync(pkt.Build(energyDef.Opcode, session.OutgoingCipher), ct);
-        }
+        await PacketSender.SendEnergy(session, _protocol, ct);
 
-        // Send welcome message
-        var msgDef = _protocol.GetOutgoingByName("SendMessage");
-        if (msgDef != null)
-        {
-            var pkt = new PacketBuilder();
-            pkt.WriteString("Welcome to AeroScape.");
-            await session.SendPacketAsync(pkt.BuildVarByte(msgDef.Opcode, session.OutgoingCipher), ct);
-        }
+        // Send weight
+        await PacketSender.SendWeight(session, _protocol, ct);
 
         // Set player options (right-click)
-        var optDef = _protocol.GetOutgoingByName("SetPlayerOption");
-        if (optDef != null)
-        {
-            foreach (var (text, slot, top) in new[] { ("Follow", 1, false), ("Trade with", 2, false), ("Req Assist", 3, false) })
-            {
-                var pkt = new PacketBuilder();
-                pkt.WriteString(text);
-                pkt.WriteByte(slot);
-                pkt.WriteByte(top ? 1 : 0);
-                await session.SendPacketAsync(pkt.BuildVarByte(optDef.Opcode, session.OutgoingCipher), ct);
-            }
-        }
+        await PacketSender.SendPlayerOption(session, _protocol, "Follow", 1, false, ct);
+        await PacketSender.SendPlayerOption(session, _protocol, "Trade with", 2, false, ct);
+        await PacketSender.SendPlayerOption(session, _protocol, "Req Assist", 3, false, ct);
+
+        // Send welcome message
+        await PacketSender.SendMessage(session, _protocol, "Welcome to AeroScape.", ct);
+        await PacketSender.SendMessage(session, _protocol, $"There are currently {_world.PlayerCount} player(s) online.", ct);
     }
 
     private async Task ProcessGamePacketsAsync(PlayerSession session, CancellationToken ct)

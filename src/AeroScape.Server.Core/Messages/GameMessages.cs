@@ -33,6 +33,13 @@ public readonly record struct CloseInterfaceMessage();
 // Appearance
 public readonly record struct AppearanceUpdateMessage(int Gender, int[] Look, int[] Colors);
 
+// Friends / Ignore
+public readonly record struct AddFriendMessage(long FriendNameLong);
+public readonly record struct RemoveFriendMessage(long FriendNameLong);
+public readonly record struct AddIgnoreMessage(long IgnoreNameLong);
+public readonly record struct RemoveIgnoreMessage(long IgnoreNameLong);
+public readonly record struct PrivateMessageMessage(long RecipientNameLong, byte[] PackedText);
+
 // Misc
 public readonly record struct KeepAliveMessage();
 public readonly record struct RegionLoadedMessage();

@@ -22,6 +22,8 @@ try
 
     // Core game engine
     builder.Services.AddSingleton<GameWorld>();
+    builder.Services.AddSingleton<ItemDefinitionService>();
+    builder.Services.AddSingleton<NpcSpawnLoader>();
     builder.Services.AddHostedService<GameEngine>();
 
     // Network layer
@@ -51,6 +53,22 @@ try
             "AeroScape.Server.Network", "Protocol", "Protocol_508.json");
     }
     await protocol.LoadAsync(protocolPath);
+
+    // Load item definitions (optional JSON file)
+    var itemDefs = app.Services.GetRequiredService<ItemDefinitionService>();
+    var itemDefsPath = Path.Combine(AppContext.BaseDirectory, "item_definitions.json");
+    if (File.Exists(itemDefsPath))
+        await itemDefs.LoadFromFileAsync(itemDefsPath);
+
+    // Load NPC spawns
+    var npcLoader = app.Services.GetRequiredService<NpcSpawnLoader>();
+    var npcSpawnPath = Path.Combine(AppContext.BaseDirectory, "npc_spawns.json");
+    if (!File.Exists(npcSpawnPath))
+    {
+        npcSpawnPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..",
+            "AeroScape.Server.App", "npc_spawns.json");
+    }
+    await npcLoader.LoadAsync(npcSpawnPath);
 
     Log.Information("AeroScape Server ready — listening on port 43594");
     await app.RunAsync();
