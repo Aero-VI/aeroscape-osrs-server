@@ -21,10 +21,10 @@ public sealed class Player
     public Appearance Appearance { get; set; } = Appearance.Default;
     public SkillSet Skills { get; } = new();
     
-    // Inventory: 28 slots, Equipment: 14 slots
+    // Inventory: 28 slots, Equipment: 14 slots, Bank: 496 (always stacks)
     public ItemContainer Inventory { get; } = new(28);
     public ItemContainer Equipment { get; } = new(14);
-    public ItemContainer Bank { get; } = new(496);
+    public ItemContainer Bank { get; } = new(496, alwaysStack: true);
     
     // Movement
     public int WalkDirection { get; set; } = -1;

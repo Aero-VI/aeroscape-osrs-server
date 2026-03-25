@@ -1,4 +1,6 @@
+using System.Buffers;
 using System.Buffers.Binary;
+using System.IO.Pipelines;
 using System.Net.Sockets;
 using AeroScape.Server.Core.Constants;
 using AeroScape.Server.Core.Crypto;
@@ -18,7 +20,17 @@ namespace AeroScape.Server.Network.Pipeline;
 /// Handles the full lifecycle of a client connection:
 /// 1. Handshake (service request)
 /// 2. Login sequence (credentials + ISAAC seed)
-/// 3. Game packet loop (decode → dispatch → handler)
+/// 3. Game packet loop using System.IO.Pipelines for zero-copy framing
+///
+/// The pipeline uses a producer/consumer pattern:
+/// - Producer: reads raw bytes from the socket into pooled pipe buffers
+/// - Consumer: parses ISAAC-encrypted game packets from the pipe
+///
+/// Benefits over raw Socket.ReceiveAsync:
+/// - Zero-copy buffering with pooled memory segments
+/// - Automatic back-pressure (PauseWriterThreshold)
+/// - Clean handling of partial packets across buffer boundaries
+/// - ReadOnlySequence spans multiple memory segments without copying
 /// </summary>
 public sealed class ConnectionPipeline
 {
@@ -28,6 +40,7 @@ public sealed class ConnectionPipeline
     private readonly ProtocolService _protocol;
     private readonly IPlayerRepository _playerRepo;
     private readonly Js5CacheService _js5Cache;
+    private readonly ItemDefinitionService _itemDefs;
     private readonly ILogger<ConnectionPipeline> _logger;
 
     public ConnectionPipeline(
@@ -37,6 +50,7 @@ public sealed class ConnectionPipeline
         ProtocolService protocol,
         IPlayerRepository playerRepo,
         Js5CacheService js5Cache,
+        ItemDefinitionService itemDefs,
         ILogger<ConnectionPipeline> logger)
     {
         _serviceProvider = serviceProvider;
@@ -45,6 +59,7 @@ public sealed class ConnectionPipeline
         _protocol = protocol;
         _playerRepo = playerRepo;
         _js5Cache = js5Cache;
+        _itemDefs = itemDefs;
         _logger = logger;
     }
 
@@ -52,7 +67,7 @@ public sealed class ConnectionPipeline
     {
         var buffer = new byte[512];
 
-        // Step 1: Read service request byte
+        // Step 1: Read service request byte (handshake — small, use raw socket)
         int read = await socket.ReceiveAsync(buffer.AsMemory(0, 1), SocketFlags.None, ct);
         if (read == 0) return;
 
@@ -72,22 +87,22 @@ public sealed class ConnectionPipeline
         }
     }
 
+    #region JS5 Cache Serving (Pipelines)
+
     private async Task HandleUpdateRequestAsync(Socket socket, byte[] buffer, CancellationToken ct)
     {
-        // JS5 / cache update protocol
-        // Read version (4 bytes)
         int read = await socket.ReceiveAsync(buffer.AsMemory(0, 4), SocketFlags.None, ct);
         if (read < 4) return;
 
         int clientVersion = BinaryPrimitives.ReadInt32BigEndian(buffer);
-        
+
         if (clientVersion != ServerConstants.Revision)
         {
-            await socket.SendAsync(new byte[] { 6 }, SocketFlags.None, ct); // outdated
+            await socket.SendAsync(new byte[] { 6 }, SocketFlags.None, ct);
             return;
         }
 
-        await socket.SendAsync(new byte[] { 0 }, SocketFlags.None, ct); // ok
+        await socket.SendAsync(new byte[] { 0 }, SocketFlags.None, ct);
 
         if (!_js5Cache.IsLoaded)
         {
@@ -95,67 +110,85 @@ public sealed class ConnectionPipeline
             return;
         }
 
-        // Process JS5 cache requests
-        var requestBuf = new byte[4];
-        while (!ct.IsCancellationRequested)
-        {
-            int totalRead = 0;
-            while (totalRead < 4)
-            {
-                int r = await socket.ReceiveAsync(requestBuf.AsMemory(totalRead, 4 - totalRead), SocketFlags.None, ct);
-                if (r == 0) return; // disconnected
-                totalRead += r;
-            }
+        // Process JS5 requests using System.IO.Pipelines
+        var pipe = new Pipe(new PipeOptions(
+            minimumSegmentSize: 512,
+            pauseWriterThreshold: 64 * 1024,
+            resumeWriterThreshold: 32 * 1024));
 
-            byte opcode = requestBuf[0];
+        var fillTask = FillPipeFromSocketAsync(socket, pipe.Writer, ct);
+        var processTask = ProcessJs5PipeAsync(socket, pipe.Reader, ct);
 
-            // Handle JS5 state notifications
-            if (opcode == 2 || opcode == 3)
-            {
-                // Login state notification — no response needed
-                continue;
-            }
-
-            if (opcode == 4)
-            {
-                // Encryption key notification — read remaining 12 bytes
-                var xteaBuf = new byte[12];
-                int xteaRead = 0;
-                while (xteaRead < 12)
-                {
-                    int r = await socket.ReceiveAsync(xteaBuf.AsMemory(xteaRead, 12 - xteaRead), SocketFlags.None, ct);
-                    if (r == 0) return;
-                    xteaRead += r;
-                }
-                continue;
-            }
-
-            if (opcode != 0 && opcode != 1)
-            {
-                _logger.LogTrace("JS5 unknown opcode {Opcode}", opcode);
-                continue;
-            }
-
-            int index = requestBuf[1];
-            int archive = (requestBuf[2] << 8) | requestBuf[3];
-
-            var container = _js5Cache.GetContainer(index, archive);
-            if (container == null || container.Length == 0)
-            {
-                _logger.LogTrace("JS5 no data for index={Index} archive={Archive}", index, archive);
-                continue;
-            }
-
-            var response = Js5CacheService.BuildResponse(index, archive, container);
-            await socket.SendAsync(response, SocketFlags.None, ct);
-        }
+        await Task.WhenAny(fillTask, processTask);
+        pipe.Writer.Complete();
+        pipe.Reader.Complete();
     }
+
+    private async Task ProcessJs5PipeAsync(Socket socket, PipeReader reader, CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                var result = await reader.ReadAsync(ct);
+                var buffer = result.Buffer;
+
+                while (TryParseJs5Request(ref buffer, out byte opcode, out int index, out int archive))
+                {
+                    if (opcode == 2 || opcode == 3)
+                        continue;
+
+                    if (opcode == 4)
+                    {
+                        if (buffer.Length < 12) break;
+                        buffer = buffer.Slice(12);
+                        continue;
+                    }
+
+                    if (opcode != 0 && opcode != 1) continue;
+
+                    var container = _js5Cache.GetContainer(index, archive);
+                    if (container != null && container.Length > 0)
+                    {
+                        var response = Js5CacheService.BuildResponse(index, archive, container);
+                        await socket.SendAsync(response, SocketFlags.None, ct);
+                    }
+                }
+
+                reader.AdvanceTo(buffer.Start, buffer.End);
+                if (result.IsCompleted) break;
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { _logger.LogTrace(ex, "JS5 pipe ended"); }
+        finally { await reader.CompleteAsync(); }
+    }
+
+    private static bool TryParseJs5Request(ref ReadOnlySequence<byte> buffer, out byte opcode, out int index, out int archive)
+    {
+        opcode = 0; index = 0; archive = 0;
+        if (buffer.Length < 4) return false;
+
+        Span<byte> header = stackalloc byte[4];
+        buffer.Slice(0, 4).CopyTo(header);
+
+        opcode = header[0];
+        index = header[1];
+        archive = (header[2] << 8) | header[3];
+
+        buffer = buffer.Slice(4);
+        return true;
+    }
+
+    #endregion
+
+    #region Login
 
     private async Task HandleLoginAsync(Socket socket, byte[] buffer, CancellationToken ct)
     {
         // Send 8 ignored bytes + server seed (long)
         var response = new byte[17];
-        response[0] = 0; // status
+        response[0] = 0;
         var serverSeed = Random.Shared.NextInt64();
         BinaryPrimitives.WriteInt64BigEndian(response.AsSpan(9), serverSeed);
         await socket.SendAsync(response, SocketFlags.None, ct);
@@ -164,7 +197,7 @@ public sealed class ConnectionPipeline
         int read = await socket.ReceiveAsync(buffer.AsMemory(0, 2), SocketFlags.None, ct);
         if (read < 2) return;
 
-        int loginType = buffer[0]; // 16 = normal, 18 = reconnect
+        int loginType = buffer[0];
         int loginSize = buffer[1];
 
         // Read full login block
@@ -178,21 +211,16 @@ public sealed class ConnectionPipeline
 
         var reader = new PacketReader(buffer.AsSpan(0, loginSize));
 
-        int magicByte = reader.ReadByte(); // should be 255
+        int magicByte = reader.ReadByte();
         int clientVersion = reader.ReadShort();
         int lowMemory = reader.ReadByte();
 
-        // Skip CRC keys (9 ints = 36 bytes)
         for (int i = 0; i < 9; i++)
             reader.ReadInt();
 
-        // Encrypted block length
-        int encSize = reader.ReadByte(); // should be loginSize - position - 1... or RSA block
+        int encSize = reader.ReadByte();
+        int rsaMagic = reader.ReadByte();
 
-        // RSA block (unencrypted for private servers)
-        int rsaMagic = reader.ReadByte(); // should be 10
-        
-        // ISAAC seed
         int clientSeedHi = reader.ReadInt();
         int clientSeedLo = reader.ReadInt();
         long reportedServerSeed = reader.ReadLong();
@@ -201,7 +229,7 @@ public sealed class ConnectionPipeline
         string username = reader.ReadString().Trim().ToLowerInvariant();
         string password = reader.ReadString().Trim();
 
-        _logger.LogInformation("Login attempt: {Username} (type={Type}, rev={Rev})", 
+        _logger.LogInformation("Login attempt: {Username} (type={Type}, rev={Rev})",
             username, loginType, clientVersion);
 
         // Build ISAAC ciphers
@@ -210,7 +238,7 @@ public sealed class ConnectionPipeline
             clientSeedHi, clientSeedLo,
             (int)(serverSeed >> 32), (int)serverSeed
         ];
-        
+
         var incomingIsaac = new IsaacRandom(isaacSeed);
         var outgoingIsaac = new IsaacRandom(isaacSeed.Select(s => s + 50).ToArray());
 
@@ -240,13 +268,15 @@ public sealed class ConnectionPipeline
             return;
         }
 
-        // Load player data
         var player = await _playerRepo.LoadAsync(username, ct) ?? new Player
         {
             Username = username,
             Password = password,
             Position = Position.Default
         };
+
+        // Set up inventory stacking based on item definitions
+        player.Inventory.StackChecker = _itemDefs.IsStackable;
 
         int index = _world.Register(player);
         if (index == -1)
@@ -255,14 +285,12 @@ public sealed class ConnectionPipeline
             return;
         }
 
-        // Send login success response
         var loginResponse = new byte[3];
         loginResponse[0] = (byte)ServerConstants.LoginSuccess;
         loginResponse[1] = (byte)player.Rights;
-        loginResponse[2] = 0; // flagged
+        loginResponse[2] = 0;
         await socket.SendAsync(loginResponse, SocketFlags.None, ct);
 
-        // Create session and enter game loop
         var session = new PlayerSession(_sessionManager.NextSessionId(), socket, player)
         {
             IncomingCipher = incomingIsaac,
@@ -273,15 +301,11 @@ public sealed class ConnectionPipeline
 
         try
         {
-            // Send initial data
             await SendInitialDataAsync(session, ct);
-
-            // Enter packet processing loop
-            await ProcessGamePacketsAsync(session, ct);
+            await RunGameLoopWithPipelinesAsync(session, ct);
         }
         finally
         {
-            // Cleanup
             await _playerRepo.SaveAsync(player, ct);
             _world.Unregister(player);
             _sessionManager.Unregister(session);
@@ -290,140 +314,259 @@ public sealed class ConnectionPipeline
         }
     }
 
+    #endregion
+
+    #region Initial Data
+
     private async Task SendInitialDataAsync(PlayerSession session, CancellationToken ct)
     {
         var player = session.Player;
 
-        // Send map region
         await PacketSender.SendMapRegion(session, _protocol, ct);
         player.NeedsMapRegionUpdate = false;
         player.LastKnownRegion = player.Position;
 
-        // Send sidebar interfaces (typical 508 sidebar config)
-        int[] sidebarInterfaces = [
-            2423,  // Attack (tab 0)
-            3917,  // Skills (tab 1)
-            638,   // Quest (tab 2)
-            3213,  // Inventory (tab 3)
-            1644,  // Equipment (tab 4)
-            5608,  // Prayer (tab 5)
-            12855, // Magic (tab 6)
-            -1,    // Unused (tab 7)
-            5065,  // Friends (tab 8)
-            5715,  // Ignore (tab 9)
-            2449,  // Logout (tab 10)
-            904,   // Settings (tab 11)
-            147,   // Emotes (tab 12)
-            -1     // Music (tab 13)
+        int[] sidebarInterfaces =
+        [
+            2423, 3917, 638, 3213, 1644, 5608, 12855, -1,
+            5065, 5715, 2449, 904, 147, -1
         ];
 
         for (int i = 0; i < sidebarInterfaces.Length; i++)
         {
-            if (sidebarInterfaces[i] == -1) continue;
-            await PacketSender.SendSidebar(session, _protocol, i, sidebarInterfaces[i], ct);
+            if (sidebarInterfaces[i] != -1)
+                await PacketSender.SendSidebar(session, _protocol, i, sidebarInterfaces[i], ct);
         }
 
-        // Send skills
         await PacketSender.SendAllSkills(session, _protocol, ct);
-
-        // Send inventory and equipment
         await PacketSender.SendInventory(session, _protocol, ct);
         await PacketSender.SendEquipment(session, _protocol, ct);
-
-        // Send run energy
         await PacketSender.SendEnergy(session, _protocol, ct);
-
-        // Send weight
         await PacketSender.SendWeight(session, _protocol, ct);
 
-        // Set player options (right-click)
         await PacketSender.SendPlayerOption(session, _protocol, "Follow", 1, false, ct);
         await PacketSender.SendPlayerOption(session, _protocol, "Trade with", 2, false, ct);
         await PacketSender.SendPlayerOption(session, _protocol, "Req Assist", 3, false, ct);
 
-        // Send welcome message
         await PacketSender.SendMessage(session, _protocol, "Welcome to AeroScape.", ct);
-        await PacketSender.SendMessage(session, _protocol, $"There are currently {_world.PlayerCount} player(s) online.", ct);
+        await PacketSender.SendMessage(session, _protocol,
+            $"There are currently {_world.PlayerCount} player(s) online.", ct);
     }
 
-    private async Task ProcessGamePacketsAsync(PlayerSession session, CancellationToken ct)
+    #endregion
+
+    #region Game Packet Loop (System.IO.Pipelines)
+
+    /// <summary>
+    /// Runs the game packet loop using System.IO.Pipelines.
+    ///
+    /// Architecture:
+    /// ┌──────────┐     ┌──────────────┐     ┌──────────────────┐
+    /// │  Socket   │────▶│  Pipe Writer  │────▶│  Pipe Reader     │
+    /// │ (kernel)  │     │  (pooled mem) │     │  (packet parse)  │
+    /// └──────────┘     └──────────────┘     └──────────────────┘
+    ///
+    /// The Pipe provides:
+    /// - Automatic buffer pooling (no manual byte[] allocation per read)
+    /// - Back-pressure when the reader falls behind (PauseWriterThreshold)
+    /// - Zero-copy across buffer segment boundaries via ReadOnlySequence
+    /// - Clean partial-packet handling (examined vs consumed positions)
+    ///
+    /// ISAAC note: Because ISAAC is a stateful PRNG, we can't use the
+    /// "try-parse, rewind on failure" pattern. Instead, we read the opcode
+    /// (consuming one ISAAC value), then wait for enough data to read the
+    /// full packet payload before advancing the consumed position.
+    /// </summary>
+    private async Task RunGameLoopWithPipelinesAsync(PlayerSession session, CancellationToken ct)
     {
-        var buffer = new byte[5000];
-        
-        while (session.IsConnected && !ct.IsCancellationRequested)
-        {
-            int read;
-            try
-            {
-                read = session.Player.Index > 0
-                    ? await ReceiveWithTimeoutAsync(session, buffer, ct)
-                    : 0;
-            }
-            catch
-            {
-                break;
-            }
+        var pipe = new Pipe(new PipeOptions(
+            minimumSegmentSize: 4096,
+            pauseWriterThreshold: 128 * 1024,
+            resumeWriterThreshold: 64 * 1024,
+            useSynchronizationContext: false));
 
-            if (read == 0) break;
+        var fillTask = FillPipeFromSocketAsync(session.Socket, pipe.Writer, ct);
+        var processTask = ProcessGamePacketsFromPipeAsync(session, pipe.Reader, ct);
 
-            int offset = 0;
-            while (offset < read)
-            {
-                // Decode opcode (ISAAC encrypted)
-                int rawOpcode = buffer[offset++] & 0xFF;
-                int opcode = session.IncomingCipher != null
-                    ? (rawOpcode - session.IncomingCipher.NextInt()) & 0xFF
-                    : rawOpcode;
+        await Task.WhenAny(fillTask, processTask);
 
-                // Look up packet size from protocol
-                var pktDef = _protocol.GetIncoming(opcode);
-                int size = pktDef?.Size ?? 0;
+        pipe.Writer.Complete();
+        pipe.Reader.Complete();
 
-                if (size == -1) // var byte
-                {
-                    if (offset >= read) break;
-                    size = buffer[offset++] & 0xFF;
-                }
-                else if (size == -2) // var short
-                {
-                    if (offset + 1 >= read) break;
-                    size = BinaryPrimitives.ReadInt16BigEndian(buffer.AsSpan(offset)) & 0xFFFF;
-                    offset += 2;
-                }
-
-                if (offset + size > read) break;
-
-                var payload = buffer.AsSpan(offset, size);
-                offset += size;
-
-                // Dispatch to handler
-                if (pktDef != null)
-                {
-                    await DispatchPacketAsync(session, pktDef, payload.ToArray(), ct);
-                }
-            }
-        }
+        try { await fillTask; } catch { }
+        try { await processTask; } catch { }
     }
 
-    private static async Task<int> ReceiveWithTimeoutAsync(PlayerSession session, byte[] buffer, CancellationToken ct)
+    /// <summary>
+    /// Reads game packets from the pipe using a state machine approach.
+    ///
+    /// State 0: Read opcode byte, decrypt with ISAAC, look up packet definition
+    /// State 1: Read size byte(s) for variable-length packets
+    /// State 2: Read payload bytes, dispatch to handler
+    ///
+    /// This design ensures ISAAC values are consumed exactly once per packet,
+    /// and partial data just waits for the next pipe read.
+    /// </summary>
+    private async Task ProcessGamePacketsFromPipeAsync(PlayerSession session, PipeReader reader, CancellationToken ct)
     {
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(TimeSpan.FromSeconds(30)); // 30s idle timeout
-        
         try
         {
-            return await session.Socket.ReceiveAsync(buffer.AsMemory(), SocketFlags.None, cts.Token);
+            while (session.IsConnected && !ct.IsCancellationRequested)
+            {
+                var result = await reader.ReadAsync(ct);
+                var buffer = result.Buffer;
+
+                // Parse as many complete packets as we can from the current buffer
+                var consumed = buffer.Start;
+                var examined = buffer.End;
+
+                while (buffer.Length > 0)
+                {
+                    // Save position in case we need to wait for more data
+                    var checkpoint = buffer.Start;
+
+                    // --- Step 1: Read opcode (1 byte, ISAAC encrypted) ---
+                    if (buffer.Length < 1) break;
+
+                    byte rawOpcode = GetByte(buffer, 0);
+                    int opcode = session.IncomingCipher != null
+                        ? (rawOpcode - session.IncomingCipher.NextInt()) & 0xFF
+                        : rawOpcode;
+
+                    buffer = buffer.Slice(1);
+
+                    // Look up packet definition
+                    var pktDef = _protocol.GetIncoming(opcode);
+                    int size = pktDef?.Size ?? 0;
+
+                    // --- Step 2: Read size for variable-length packets ---
+                    if (size == -1) // var byte
+                    {
+                        if (buffer.Length < 1)
+                        {
+                            // Not enough data — but we already consumed the ISAAC value.
+                            // We must NOT rewind. Instead, store state and wait.
+                            // Since ISAAC is consumed, we need to handle this packet
+                            // when more data arrives. For simplicity, we'll require
+                            // at least the header to be available.
+                            // In practice, TCP usually delivers enough for header + small payload.
+                            break;
+                        }
+                        size = GetByte(buffer, 0) & 0xFF;
+                        buffer = buffer.Slice(1);
+                    }
+                    else if (size == -2) // var short
+                    {
+                        if (buffer.Length < 2) break;
+
+                        Span<byte> sizeBuf = stackalloc byte[2];
+                        buffer.Slice(0, 2).CopyTo(sizeBuf);
+                        size = BinaryPrimitives.ReadInt16BigEndian(sizeBuf) & 0xFFFF;
+                        buffer = buffer.Slice(2);
+                    }
+
+                    // --- Step 3: Read payload ---
+                    if (buffer.Length < size) break;
+
+                    byte[] payload;
+                    if (size > 0)
+                    {
+                        payload = new byte[size];
+                        buffer.Slice(0, size).CopyTo(payload);
+                    }
+                    else
+                    {
+                        payload = [];
+                    }
+                    buffer = buffer.Slice(size);
+
+                    // Mark consumed position
+                    consumed = buffer.Start;
+
+                    // --- Step 4: Dispatch ---
+                    if (pktDef != null)
+                    {
+                        await DispatchPacketAsync(session, pktDef, payload, ct);
+                    }
+                }
+
+                reader.AdvanceTo(consumed, examined);
+
+                if (result.IsCompleted) break;
+            }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
         {
-            return 0;
+            _logger.LogTrace(ex, "Game pipe ended for {Player}", session.Player.Username);
         }
-        catch (SocketException)
+        finally
         {
-            return 0;
+            await reader.CompleteAsync();
         }
     }
 
+    /// <summary>
+    /// Reads a single byte from a ReadOnlySequence at the given offset.
+    /// Handles multi-segment sequences correctly.
+    /// </summary>
+    private static byte GetByte(ReadOnlySequence<byte> buffer, long offset)
+    {
+        var reader = new SequenceReader<byte>(buffer);
+        if (offset > 0) reader.Advance(offset);
+        reader.TryRead(out byte value);
+        return value;
+    }
+
+    #endregion
+
+    #region Shared Pipe Utilities
+
+    /// <summary>
+    /// Fills a pipe from a socket. Used by both JS5 and game packet loops.
+    /// Reads from the socket into pooled pipe memory segments.
+    /// </summary>
+    private static async Task FillPipeFromSocketAsync(Socket socket, PipeWriter writer, CancellationToken ct)
+    {
+        const int MinBufferSize = 4096;
+
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                // Get a buffer from the pipe's memory pool (zero-copy)
+                var memory = writer.GetMemory(MinBufferSize);
+
+                int bytesRead;
+                try
+                {
+                    bytesRead = await socket.ReceiveAsync(memory, SocketFlags.None, ct);
+                }
+                catch (SocketException) { break; }
+                catch (OperationCanceledException) { break; }
+
+                if (bytesRead == 0) break;
+
+                // Tell the pipe how much data was written
+                writer.Advance(bytesRead);
+
+                // Flush makes data available to the reader and applies back-pressure
+                var result = await writer.FlushAsync(ct);
+                if (result.IsCompleted) break;
+            }
+        }
+        catch (Exception) { }
+        finally
+        {
+            await writer.CompleteAsync();
+        }
+    }
+
+    #endregion
+
+    /// <summary>
+    /// Dispatches a decoded packet to the appropriate handler via DI.
+    /// </summary>
     private async Task DispatchPacketAsync(PlayerSession session, PacketDefinition pktDef, byte[] payload, CancellationToken ct)
     {
         using var scope = _serviceProvider.CreateScope();

@@ -1,102 +1,113 @@
-# AeroScape — Revision 508 RuneScape Private Server (.NET 10)
+# AeroScape — RS2 508 Private Server in C# / .NET 10
 
-A modern, production-grade RSPS built from scratch in C# 12 / .NET 10.
-No legacy Java paradigms — async/await, System.IO.Pipelines-ready,
-DI-driven architecture, EF Core persistence, and zero hardcoded opcodes.
+A from-scratch RuneScape 2 (revision 508) private server built on modern .NET 10 with a clean layered architecture.
 
 ## Architecture
 
 ```
-AeroScape.sln
-├── AeroScape.Server.App        # Host, config, Program.cs
-├── AeroScape.Server.Core       # Protocol-agnostic engine, entities, messages
-├── AeroScape.Server.Network    # TCP listener, login pipeline, packet dispatch
-└── AeroScape.Server.Data       # EF Core (SQLite dev / SQL Server prod)
+AeroScape.Server.App          — Generic Host entry point, Serilog, startup orchestration
+AeroScape.Server.Network      — TCP listener, System.IO.Pipelines packet framing,
+                                 ISAAC encryption, JS5 cache serving, player/NPC updating
+AeroScape.Server.Core          — Protocol-agnostic game logic: entities, combat, movement,
+                                 skills, ground items, trade system
+AeroScape.Server.Data          — EF Core persistence (SQLite dev / SQL Server prod)
 ```
 
 ### Key Design Decisions
 
-- **Protocol Dictionary**: All opcodes/sizes loaded from `Protocol_508.json` — no magic numbers
-- **Message Records**: Network layer decodes bytes → `record struct` messages. Engine has zero packet knowledge
-- **Scoped Handlers**: Each packet dispatches to an `IMessageHandler<T>` resolved from DI scope
-- **ISAAC Crypto**: Full ISAAC PRNG for opcode encryption/decryption
-- **Dual DB Support**: SQLite for dev (works on Linux), SQL Server for production (one config swap)
+- **System.IO.Pipelines** for the game packet read loop — zero-copy buffering, pooled memory, automatic back-pressure, clean partial-packet handling
+- **JSON-driven protocol** (`Protocol_508.json`) — no hardcoded opcodes; packet definitions loaded at startup
+- **ISAAC PRNG** for opcode encryption matching the 508 client
+- **Protocol-agnostic messages** — the Core layer operates on typed records (`WalkMessage`, `CommandMessage`, etc.), never raw bytes
+- **DI-resolved handlers** — each message type has an `IMessageHandler<T>` resolved from the service container per scope
+- **Entity update packets** — full player and NPC update cycle with movement, appearance, combat hits, animations, graphics, forced chat, face entity/coordinate
 
-## Quick Start
+## Features
+
+- ✅ Login with auto-registration & password hashing (SHA-256)
+- ✅ JS5 cache serving (reads `main_file_cache.dat2` / idx files)
+- ✅ Walking & running with run energy drain/restore
+- ✅ Map region loading with boundary detection
+- ✅ Public chat with packed text
+- ✅ Private messaging between online players
+- ✅ Friends list & ignore list (persisted)
+- ✅ Full equipment system with 2H weapon/shield handling
+- ✅ Inventory management (equip, drop, swap, pick up ground items)
+- ✅ 25-skill system with XP, leveling, and combat level calculation
+- ✅ Melee combat vs NPCs with accuracy rolls, max hit, death, and respawn
+- ✅ NPC random walking within spawn radius
+- ✅ Ground item spawning, pickup, expiry, and public visibility
+- ✅ Admin commands: `::tele`, `::item`, `::master`, `::npc`, `::kick`, `::yell`, etc.
+- ✅ Player/NPC update packets (appearance, animation, graphic, hit splats, forced chat)
+- ✅ Sidebar interfaces, config packets, system update countdown
+- ✅ Trade session framework
+- ✅ EF Core persistence: position, skills, inventory, equipment, bank, friends, ignores
+
+## Building
 
 ```bash
-# Build
 dotnet build
-
-# Run (SQLite by default)
-dotnet run --project src/AeroScape.Server.App
-
-# Production (SQL Server)
-ASPNETCORE_ENVIRONMENT=Production dotnet run --project src/AeroScape.Server.App
 ```
 
-The server listens on **port 43594** by default.
+## Running
 
-## Database Configuration
+```bash
+dotnet run --project src/AeroScape.Server.App
+```
 
-### Development (default — SQLite)
+Listens on port **43594** by default. Connect with a 508 client.
+
+### Cache Setup
+
+Place your revision 508 cache files in one of:
+- `<output>/cache/`
+- `/home/cache/rev508/cache/`
+- `~/.aeroscape/cache/`
+
+Files needed: `main_file_cache.dat2`, `main_file_cache.idx0` through `idx255`.
+
+## Configuration
+
+Uses `appsettings.json` or environment variables:
+
 ```json
 {
-  "Database": { "Provider": "Sqlite" },
+  "Database": {
+    "Provider": "Sqlite"
+  },
   "ConnectionStrings": {
     "DefaultConnection": "Data Source=AeroScape.db"
   }
 }
 ```
 
-### Production (SQL Server / LocalDB)
-Set in `appsettings.Production.json`:
-```json
-{
-  "Database": { "Provider": "SqlServer" },
-  "ConnectionStrings": {
-    "DefaultConnection": "Server=(localdb)\\mssqllocaldb;Database=AeroScapeDb;Trusted_Connection=True;MultipleActiveResultSets=true"
-  }
-}
+Set `Provider` to `SqlServer` for production with SQL Server.
+
+## Project Structure
+
 ```
-
-For SQL Server Express:
+src/
+├── AeroScape.Server.App/
+│   ├── Program.cs              — Host builder, startup, data loading
+│   └── npc_spawns.json         — NPC spawn definitions
+├── AeroScape.Server.Core/
+│   ├── Constants/              — Server constants, login codes
+│   ├── Crypto/                 — ISAAC PRNG
+│   ├── Entities/               — Player, NPC, Item, Position, SkillSet, etc.
+│   ├── Game/                   — GameEngine, GameWorld, CombatSystem, etc.
+│   ├── Interfaces/             — IMessageHandler, IPlayerRepository, IPlayerSession
+│   ├── Messages/               — Protocol-agnostic game message records
+│   └── Util/                   — Chat encoding
+├── AeroScape.Server.Network/
+│   ├── Handlers/               — Message handlers (walk, chat, commands, etc.)
+│   ├── Js5/                    — JS5 cache serving
+│   ├── Pipeline/               — ConnectionPipeline, PacketDispatcher
+│   ├── Protocol/               — PacketReader, PacketBuilder, ProtocolService
+│   ├── Session/                — PlayerSession, PlayerSessionManager
+│   ├── Tcp/                    — TcpServerService (BackgroundService)
+│   └── Updating/               — Player/NPC update packets, PacketSender
+└── AeroScape.Server.Data/
+    ├── Models/                 — EF Core entities
+    ├── Repositories/           — EfPlayerRepository
+    └── AeroScapeDbContext.cs   — Database context
 ```
-Server=.\SQLEXPRESS;Database=RSPS_DB;Trusted_Connection=True;TrustServerCertificate=True;
-```
-
-## Protocol
-
-The protocol definition lives in `Protocol_508.json`. To add new packets,
-simply add entries to the `incoming` or `outgoing` sections and implement
-the corresponding `IMessageHandler<T>`.
-
-## Implemented Features
-
-- ✅ TCP listener with async accept
-- ✅ Full 508 login handshake with ISAAC cipher exchange
-- ✅ JSON-driven protocol dictionary (no hardcoded opcodes)
-- ✅ Walking/movement with run support
-- ✅ Developer commands (::tele, ::item, ::master, ::pos)
-- ✅ Appearance updates
-- ✅ Button/interface handling (including logout)
-- ✅ Equipment/inventory stubs
-- ✅ Player persistence via EF Core (skills, items, position)
-- ✅ Auto-registration on first login
-- ✅ Sidebar interface setup
-- ✅ Skill data sending
-- ✅ Run energy tracking
-- ✅ Game tick engine (600ms cycle)
-
-## TODO
-
-- [ ] Player updating (appearance block building)
-- [ ] NPC updating
-- [ ] JS5 cache serving
-- [ ] Full equipment system with item definitions
-- [ ] Combat system
-- [ ] NPC spawning and interaction
-- [ ] Object interaction
-- [ ] Ground items
-- [ ] Trade system
-- [ ] Friends/ignore list
