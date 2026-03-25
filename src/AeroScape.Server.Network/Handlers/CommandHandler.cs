@@ -4,6 +4,7 @@ using AeroScape.Server.Core.Interfaces;
 using AeroScape.Server.Core.Messages;
 using AeroScape.Server.Network.Protocol;
 using AeroScape.Server.Network.Session;
+using AeroScape.Server.Network.Updating;
 using Microsoft.Extensions.Logging;
 
 namespace AeroScape.Server.Network.Handlers;
@@ -106,8 +107,7 @@ public sealed class CommandHandler : IMessageHandler<CommandMessage>
                 break;
 
             case "bank":
-                // TODO: Open bank interface
-                await SendMessage(ps, "Banking not yet implemented.", ct);
+                await BankService.OpenBank(ps, _protocol, ct);
                 break;
 
             case "empty":
@@ -154,6 +154,96 @@ public sealed class CommandHandler : IMessageHandler<CommandMessage>
                 foreach (var otherSession in ps.SessionManager?.GetAll() ?? [])
                 {
                     await SendMessageTo(otherSession, $"[{player.Username}]: {yellMsg}", ct);
+                }
+                break;
+
+            case "kick" when message.Arguments.Length >= 1 && player.Rights >= 1:
+                string kickName = message.Arguments[0].ToLowerInvariant();
+                var kickTarget = _world.FindPlayer(kickName);
+                if (kickTarget != null)
+                {
+                    // Find and disconnect their session
+                    foreach (var otherSession in ps.SessionManager?.GetAll() ?? [])
+                    {
+                        if (otherSession.Player == kickTarget)
+                        {
+                            await PacketSender.SendLogout(otherSession, _protocol, ct);
+                            otherSession.Disconnect("Kicked by admin");
+                            break;
+                        }
+                    }
+                    await SendMessage(ps, $"Kicked {kickName}.", ct);
+                }
+                else
+                {
+                    await SendMessage(ps, $"Player '{kickName}' not found.", ct);
+                }
+                break;
+
+            case "teleto" when message.Arguments.Length >= 1 && player.Rights >= 1:
+                string teleToName = message.Arguments[0].ToLowerInvariant();
+                var teleToTarget = _world.FindPlayer(teleToName);
+                if (teleToTarget != null)
+                {
+                    player.Position = teleToTarget.Position;
+                    player.NeedsMapRegionUpdate = true;
+                    player.IsTeleporting = true;
+                    player.UpdateRequired = true;
+                    await SendMessage(ps, $"Teleported to {teleToTarget.Username}.", ct);
+                }
+                else
+                {
+                    await SendMessage(ps, $"Player '{teleToName}' not found.", ct);
+                }
+                break;
+
+            case "teletome" when message.Arguments.Length >= 1 && player.Rights >= 2:
+                string teleToMeName = message.Arguments[0].ToLowerInvariant();
+                var teleToMeTarget = _world.FindPlayer(teleToMeName);
+                if (teleToMeTarget != null)
+                {
+                    teleToMeTarget.Position = player.Position;
+                    teleToMeTarget.NeedsMapRegionUpdate = true;
+                    teleToMeTarget.IsTeleporting = true;
+                    teleToMeTarget.UpdateRequired = true;
+                    await SendMessage(ps, $"Teleported {teleToMeTarget.Username} to you.", ct);
+                }
+                else
+                {
+                    await SendMessage(ps, $"Player '{teleToMeName}' not found.", ct);
+                }
+                break;
+
+            case "update" when player.Rights >= 2:
+                int updateTicks = message.Arguments.Length >= 1 && int.TryParse(message.Arguments[0], out int ut) ? ut : 100;
+                foreach (var otherSession in ps.SessionManager?.GetAll() ?? [])
+                {
+                    await PacketSender.SendSystemUpdate(otherSession, _protocol, updateTicks, ct);
+                }
+                await SendMessage(ps, $"System update in {updateTicks} ticks ({updateTicks * 0.6:F0}s).", ct);
+                break;
+
+            case "interface" when message.Arguments.Length >= 1 && player.Rights >= 2:
+                if (int.TryParse(message.Arguments[0], out int ifaceId))
+                {
+                    await PacketSender.SendInterface(ps, _protocol, ifaceId, ct);
+                    await SendMessage(ps, $"Opening interface {ifaceId}.", ct);
+                }
+                break;
+
+            case "config" when message.Arguments.Length >= 2 && player.Rights >= 2:
+                if (int.TryParse(message.Arguments[0], out int cfgId) && int.TryParse(message.Arguments[1], out int cfgVal))
+                {
+                    await PacketSender.SendConfig(ps, _protocol, cfgId, cfgVal, ct);
+                    await SendMessage(ps, $"Set config {cfgId} = {cfgVal}.", ct);
+                }
+                break;
+
+            case "rights" when message.Arguments.Length >= 1 && player.Rights >= 2:
+                if (int.TryParse(message.Arguments[0], out int rights))
+                {
+                    player.Rights = Math.Clamp(rights, 0, 2);
+                    await SendMessage(ps, $"Set rights to {player.Rights}.", ct);
                 }
                 break;
 

@@ -9,7 +9,8 @@ namespace AeroScape.Server.Network.Tcp;
 
 /// <summary>
 /// High-performance TCP listener using async socket accept.
-/// Runs as a BackgroundService, delegates each connection to the login pipeline.
+/// Runs as a BackgroundService, delegates each connection to the connection pipeline.
+/// Uses System.IO.Pipelines internally for efficient zero-copy packet framing.
 /// </summary>
 public sealed class TcpServerService : BackgroundService
 {
@@ -30,7 +31,7 @@ public sealed class TcpServerService : BackgroundService
         _listener.Bind(new IPEndPoint(IPAddress.Any, ServerConstants.Port));
         _listener.Listen(128);
 
-        _logger.LogInformation("TCP server listening on port {Port}", ServerConstants.Port);
+        _logger.LogInformation("TCP server listening on port {Port} (Pipelines-backed)", ServerConstants.Port);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -40,7 +41,7 @@ public sealed class TcpServerService : BackgroundService
                 clientSocket.NoDelay = true;
                 
                 // Fire and forget — each connection handled independently
-                _ = Task.Run(() => HandleConnectionAsync(clientSocket, stoppingToken), stoppingToken);
+                _ = HandleConnectionAsync(clientSocket, stoppingToken);
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex)

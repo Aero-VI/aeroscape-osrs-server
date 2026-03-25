@@ -107,16 +107,40 @@ public sealed class ObjectInteractHandler : IMessageHandler<ObjectInteractMessag
         // Face the object
         player.FacePosition(new Position(message.X, message.Y));
 
-        // TODO: Walk to object if not adjacent
-        // TODO: Handle specific object interactions (bank booths, doors, ladders)
-        
-        var msgDef = _protocol.GetOutgoingByName("SendMessage");
-        if (msgDef != null)
+        // Bank booths
+        if (BankService.IsBankBooth(message.ObjectId))
         {
-            var pkt = new PacketBuilder();
-            pkt.WriteString($"Nothing interesting happens. (Object: {message.ObjectId})");
-            await ps.SendPacketAsync(pkt.BuildVarByte(msgDef.Opcode, ps.OutgoingCipher), ct);
+            await BankService.OpenBank(ps, _protocol, ct);
+            return;
         }
+
+        // Ladders (common object IDs)
+        if (message.ObjectId is 1746 or 1747 or 1748 or 2147 or 2148)
+        {
+            int newZ = message.OptionIndex == 1 ? player.Position.Z + 1 : player.Position.Z - 1;
+            newZ = Math.Clamp(newZ, 0, 3);
+            player.Position = new Position(player.Position.X, player.Position.Y, newZ);
+            player.NeedsMapRegionUpdate = true;
+            player.IsTeleporting = true;
+            player.UpdateRequired = true;
+            await PacketSender.SendMessage(ps, _protocol, $"You climb the ladder.", ct);
+            return;
+        }
+
+        // Stairs
+        if (message.ObjectId is 2113 or 2114 or 2118 or 2119)
+        {
+            int newZ = message.OptionIndex == 1 ? player.Position.Z + 1 : player.Position.Z - 1;
+            newZ = Math.Clamp(newZ, 0, 3);
+            player.Position = new Position(player.Position.X, player.Position.Y, newZ);
+            player.NeedsMapRegionUpdate = true;
+            player.IsTeleporting = true;
+            player.UpdateRequired = true;
+            await PacketSender.SendMessage(ps, _protocol, $"You walk up the stairs.", ct);
+            return;
+        }
+
+        await PacketSender.SendMessage(ps, _protocol, $"Nothing interesting happens. (Object: {message.ObjectId})", ct);
     }
 }
 
@@ -208,7 +232,7 @@ public sealed class GroundItemInteractHandler : IMessageHandler<GroundItemIntera
             {
                 _logger.LogTrace("Player {Name} picked up ground item {Id} x{Amount}",
                     player.Username, groundItem.ItemId, groundItem.Amount);
-                // TODO: Send inventory update
+                await PacketSender.SendInventory(ps, _protocol, ct);
             }
             else
             {

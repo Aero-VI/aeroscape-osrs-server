@@ -2,11 +2,13 @@ namespace AeroScape.Server.Core.Entities;
 
 /// <summary>
 /// Queued waypoint walking for a player.
-/// Ported from typical Java RSPS walking queue logic.
+/// Handles step-by-step path following, run energy drain,
+/// and map region boundary detection.
 /// </summary>
 public sealed class MovementHandler
 {
     private readonly Queue<Position> _waypoints = new();
+    private int _energyRestoreTicks;
 
     public void Reset() => _waypoints.Clear();
 
@@ -23,6 +25,19 @@ public sealed class MovementHandler
     {
         player.WalkDirection = -1;
         player.RunDirection = -1;
+
+        // Regenerate run energy when not running
+        if (!player.IsRunning || _waypoints.Count == 0)
+        {
+            _energyRestoreTicks++;
+            // Restore 1 energy every ~5 ticks (3 seconds) when walking/standing
+            if (_energyRestoreTicks >= 5 && player.RunEnergy < 100)
+            {
+                player.RunEnergy = Math.Min(100, player.RunEnergy + 1);
+                player.EnergyChanged = true;
+                _energyRestoreTicks = 0;
+            }
+        }
 
         if (_waypoints.Count == 0)
             return false;
@@ -47,11 +62,39 @@ public sealed class MovementHandler
             {
                 player.RunDirection = runDir;
                 player.Position = runPoint;
-                player.RunEnergy--;
+                player.RunEnergy = Math.Max(0, player.RunEnergy - 1);
+                player.EnergyChanged = true;
             }
         }
+        else if (player.IsRunning && player.RunEnergy <= 0)
+        {
+            // Out of energy — stop running
+            player.IsRunning = false;
+        }
+
+        // Check if we crossed a map region boundary
+        CheckRegionUpdate(player);
 
         return true;
+    }
+
+    /// <summary>
+    /// Detects when the player has moved far enough from their last known region
+    /// to require a map region update packet.
+    /// </summary>
+    private static void CheckRegionUpdate(Player player)
+    {
+        var delta = player.Position.Delta(player.LastKnownRegion);
+        // If we're within 16 tiles of the region edge, send update
+        // Region is loaded as a 13x13 chunk area (104x104 tiles)
+        // Center is at local (52, 52), trigger when within ~16 tiles of edge
+        int localX = player.Position.X - 8 * player.LastKnownRegion.RegionX;
+        int localY = player.Position.Y - 8 * player.LastKnownRegion.RegionY;
+
+        if (localX < 16 || localX >= 88 || localY < 16 || localY >= 88)
+        {
+            player.NeedsMapRegionUpdate = true;
+        }
     }
 
     public bool HasSteps => _waypoints.Count > 0;

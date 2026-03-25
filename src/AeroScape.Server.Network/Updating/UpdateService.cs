@@ -96,6 +96,20 @@ public sealed class UpdateService : IGameTickProcessor
             }
         }
 
+        // Phase 4b: Send run energy updates where needed
+        foreach (var session in sessions)
+        {
+            if (!session.IsConnected) continue;
+            if (session.Player.EnergyChanged)
+            {
+                try
+                {
+                    await PacketSender.SendEnergy(session, _protocol, ct);
+                }
+                catch { /* swallow — non-critical */ }
+            }
+        }
+
         // Phase 5: Reset flags
         foreach (var player in _world.GetActivePlayers())
             player.ResetFlags();

@@ -39,6 +39,7 @@ public sealed class Player
     
     // Energy
     public int RunEnergy { get; set; } = 100;
+    public bool EnergyChanged { get; set; }
     
     // Flags
     public bool IsActive { get; set; }
@@ -126,6 +127,7 @@ public sealed class Player
         FaceCoordinateUpdateRequired = false;
         HitUpdateRequired = false;
         Hit2UpdateRequired = false;
+        EnergyChanged = false;
         WalkDirection = -1;
         RunDirection = -1;
         IsTeleporting = false;
