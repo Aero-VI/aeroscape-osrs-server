@@ -34,10 +34,10 @@ namespace AeroScape.Server.Network.Pipeline;
 public sealed class ConnectionPipeline
 {
     private readonly IServiceProvider _serviceProvider;
+    private readonly IServiceScopeFactory _scopeFactory;
     private readonly PlayerSessionManager _sessionManager;
     private readonly GameWorld _world;
     private readonly ProtocolService _protocol;
-    private readonly IPlayerRepository _playerRepo;
     private readonly Js5CacheService _js5Cache;
     private readonly LoginHandler _loginHandler;
     private readonly PacketRouter _packetRouter;
@@ -45,20 +45,20 @@ public sealed class ConnectionPipeline
 
     public ConnectionPipeline(
         IServiceProvider serviceProvider,
+        IServiceScopeFactory scopeFactory,
         PlayerSessionManager sessionManager,
         GameWorld world,
         ProtocolService protocol,
-        IPlayerRepository playerRepo,
         Js5CacheService js5Cache,
         LoginHandler loginHandler,
         PacketRouter packetRouter,
         ILogger<ConnectionPipeline> logger)
     {
         _serviceProvider = serviceProvider;
+        _scopeFactory = scopeFactory;
         _sessionManager = sessionManager;
         _world = world;
         _protocol = protocol;
-        _playerRepo = playerRepo;
         _js5Cache = js5Cache;
         _loginHandler = loginHandler;
         _packetRouter = packetRouter;
@@ -201,7 +201,12 @@ public sealed class ConnectionPipeline
         }
         finally
         {
-            await _playerRepo.SaveAsync(loginResult.Player, ct);
+            // Save player state in a fresh scope (DbContext is scoped)
+            await using (var saveScope = _scopeFactory.CreateAsyncScope())
+            {
+                var playerRepo = saveScope.ServiceProvider.GetRequiredService<IPlayerRepository>();
+                await playerRepo.SaveAsync(loginResult.Player, ct);
+            }
             _world.Unregister(loginResult.Player);
             _sessionManager.Unregister(session);
             session.Dispose();

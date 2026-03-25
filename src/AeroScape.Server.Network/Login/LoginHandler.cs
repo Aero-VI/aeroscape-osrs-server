@@ -7,6 +7,7 @@ using AeroScape.Server.Core.Game;
 using AeroScape.Server.Core.Interfaces;
 using AeroScape.Server.Network.Protocol;
 using AeroScape.Server.Network.Session;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace AeroScape.Server.Network.Login;
@@ -37,20 +38,20 @@ public sealed class LoginHandler
 {
     private readonly PlayerSessionManager _sessionManager;
     private readonly GameWorld _world;
-    private readonly IPlayerRepository _playerRepo;
+    private readonly IServiceScopeFactory _scopeFactory;
     private readonly ItemDefinitionService _itemDefs;
     private readonly ILogger<LoginHandler> _logger;
 
     public LoginHandler(
         PlayerSessionManager sessionManager,
         GameWorld world,
-        IPlayerRepository playerRepo,
+        IServiceScopeFactory scopeFactory,
         ItemDefinitionService itemDefs,
         ILogger<LoginHandler> logger)
     {
         _sessionManager = sessionManager;
         _world = world;
-        _playerRepo = playerRepo;
+        _scopeFactory = scopeFactory;
         _itemDefs = itemDefs;
         _logger = logger;
     }
@@ -121,8 +122,11 @@ public sealed class LoginHandler
         var incomingIsaac = new IsaacRandom(isaacSeed);
         var outgoingIsaac = new IsaacRandom(isaacSeed.Select(s => s + 50).ToArray());
 
-        // --- Step 5: Validate credentials ---
-        int responseCode = await ValidateCredentialsAsync(username, password, ct);
+        // --- Step 5: Validate credentials (scoped — DbContext is scoped) ---
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var playerRepo = scope.ServiceProvider.GetRequiredService<IPlayerRepository>();
+
+        int responseCode = await ValidateCredentialsAsync(playerRepo, username, password, ct);
 
         if (responseCode != ServerConstants.LoginSuccess)
         {
@@ -131,7 +135,7 @@ public sealed class LoginHandler
         }
 
         // --- Step 6: Load / create player ---
-        var player = await _playerRepo.LoadAsync(username, ct) ?? new Player
+        var player = await playerRepo.LoadAsync(username, ct) ?? new Player
         {
             Username = username,
             Password = password,
@@ -174,19 +178,19 @@ public sealed class LoginHandler
         };
     }
 
-    private async Task<int> ValidateCredentialsAsync(string username, string password, CancellationToken ct)
+    private async Task<int> ValidateCredentialsAsync(IPlayerRepository playerRepo, string username, string password, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(username) || username.Length > 12)
             return ServerConstants.LoginInvalidCredentials;
 
-        if (!await _playerRepo.ExistsAsync(username, ct))
+        if (!await playerRepo.ExistsAsync(username, ct))
         {
             // Auto-register
-            await _playerRepo.CreateAsync(username, password, ct);
+            await playerRepo.CreateAsync(username, password, ct);
             return ServerConstants.LoginSuccess;
         }
 
-        if (!await _playerRepo.ValidateCredentialsAsync(username, password, ct))
+        if (!await playerRepo.ValidateCredentialsAsync(username, password, ct))
             return ServerConstants.LoginInvalidCredentials;
 
         if (_world.IsOnline(username))
