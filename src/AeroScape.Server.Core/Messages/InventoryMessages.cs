@@ -5,15 +5,9 @@ namespace AeroScape.Server.Core.Messages;
 /// </summary>
 public readonly record struct MoveItemMessage(int InterfaceId, int FromSlot, int ToSlot);
 
-/// <summary>
-/// Drop an item from inventory.
-/// </summary>
-public readonly record struct DropItemMessage(int ItemId, int Slot, int InterfaceId);
+// DropItemMessage moved to DropItemMessage.cs
 
-/// <summary>
-/// Operate/use an item (e.g., right-click "Operate").
-/// </summary>
-public readonly record struct ItemOperateMessage(int ItemId, int Slot, int InterfaceHash);
+// ItemOperateMessage moved to ItemOperateMessage.cs
 
 /// <summary>
 /// First right-click option on an item.

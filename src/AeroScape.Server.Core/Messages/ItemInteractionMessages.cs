@@ -1,9 +1,6 @@
 namespace AeroScape.Server.Core.Messages;
 
-/// <summary>
-/// Use one item on another item.
-/// </summary>
-public readonly record struct ItemOnItemMessage(int UsedItemId, int UsedWithItemId);
+// ItemOnItemMessage moved to ItemOnItemMessage.cs
 
 /// <summary>
 /// Use an item on an NPC.
