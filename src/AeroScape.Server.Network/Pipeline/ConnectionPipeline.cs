@@ -335,6 +335,13 @@ public sealed class ConnectionPipeline
     /// <summary>
     /// Reads game packets from the pipe using a state machine approach.
     /// Dispatches to <see cref="PacketRouter"/> instead of a manual switch.
+    ///
+    /// CRITICAL: ISAAC values must only be consumed when the full packet is
+    /// available in the buffer. If we consume an ISAAC value for the opcode
+    /// but then discover we don't have enough bytes for the payload, the
+    /// ISAAC stream becomes permanently desynchronized from the client.
+    /// We solve this by peeking at the buffer to calculate the total frame
+    /// size BEFORE consuming any ISAAC values.
     /// </summary>
     private async Task ProcessGamePacketsFromPipeAsync(PlayerSession session, PipeReader reader, CancellationToken ct)
     {
@@ -350,50 +357,76 @@ public sealed class ConnectionPipeline
 
                 while (buffer.Length > 0)
                 {
-                    // --- Step 1: Read opcode (1 byte, ISAAC encrypted) ---
+                    // --- Peek at opcode to determine frame size BEFORE consuming ISAAC ---
                     if (buffer.Length < 1) break;
 
                     byte rawOpcode = GetByte(buffer, 0);
+
+                    // Peek-decrypt the opcode to look up the packet definition.
+                    // We must NOT call NextInt() yet — just peek at what the opcode would be.
+                    // To peek without consuming, we calculate what the decrypted value would be
+                    // by using a temporary approach: we need to know the frame size first.
+                    //
+                    // Strategy: compute total bytes needed for this frame, then only consume
+                    // the ISAAC value once we're sure the entire frame is buffered.
+
+                    // Tentatively decrypt to look up the packet definition.
+                    // We'll consume the ISAAC value for real only after confirming the full frame fits.
                     int opcode = session.IncomingCipher != null
-                        ? (rawOpcode - session.IncomingCipher.NextInt()) & 0xFF
+                        ? (rawOpcode - session.IncomingCipher.PeekNextInt()) & 0xFF
                         : rawOpcode;
 
-                    buffer = buffer.Slice(1);
-
                     var pktDef = _protocol.GetIncoming(opcode);
-                    int size = pktDef?.Size ?? 0;
+                    int declaredSize = pktDef?.Size ?? 0;
 
-                    // --- Step 2: Read size for variable-length packets ---
-                    if (size == -1) // var byte
+                    // Calculate total frame length (opcode + optional size header + payload)
+                    int headerSize = 1; // opcode byte
+                    int payloadSize;
+
+                    if (declaredSize == -1) // var byte
                     {
-                        if (buffer.Length < 1) break;
-                        size = GetByte(buffer, 0) & 0xFF;
-                        buffer = buffer.Slice(1);
+                        headerSize += 1;
+                        if (buffer.Length < headerSize) break;
+                        payloadSize = GetByte(buffer, 1) & 0xFF;
                     }
-                    else if (size == -2) // var short
+                    else if (declaredSize == -2) // var short
                     {
-                        if (buffer.Length < 2) break;
-                        size = (GetByte(buffer, 0) << 8 | GetByte(buffer, 1)) & 0xFFFF;
-                        buffer = buffer.Slice(2);
+                        headerSize += 2;
+                        if (buffer.Length < headerSize) break;
+                        payloadSize = ((GetByte(buffer, 1) << 8) | GetByte(buffer, 2)) & 0xFFFF;
+                    }
+                    else
+                    {
+                        payloadSize = declaredSize;
                     }
 
-                    // --- Step 3: Read payload ---
-                    if (buffer.Length < size) break;
+                    int totalFrameSize = headerSize + payloadSize;
 
+                    // Ensure the entire frame is buffered before consuming anything
+                    if (buffer.Length < totalFrameSize) break;
+
+                    // --- NOW it's safe to consume the ISAAC value ---
+                    if (session.IncomingCipher != null)
+                        session.IncomingCipher.NextInt(); // consume the value we peeked
+
+                    // Advance past header
+                    buffer = buffer.Slice(headerSize);
+
+                    // --- Read payload ---
                     byte[] payload;
-                    if (size > 0)
+                    if (payloadSize > 0)
                     {
-                        payload = new byte[size];
-                        buffer.Slice(0, size).CopyTo(payload);
+                        payload = new byte[payloadSize];
+                        buffer.Slice(0, payloadSize).CopyTo(payload);
                     }
                     else
                     {
                         payload = [];
                     }
-                    buffer = buffer.Slice(size);
+                    buffer = buffer.Slice(payloadSize);
                     consumed = buffer.Start;
 
-                    // --- Step 4: Route through PacketRouter ---
+                    // --- Route through PacketRouter ---
                     if (pktDef != null)
                     {
                         using var scope = _serviceProvider.CreateScope();

@@ -32,6 +32,51 @@ public sealed class IsaacRandom
         return _results[_count];
     }
 
+    /// <summary>
+    /// Peeks at the next value without consuming it.
+    /// Used to tentatively decrypt an opcode before confirming the full
+    /// packet frame is buffered — prevents ISAAC stream desynchronization
+    /// on partial reads.
+    /// </summary>
+    public int PeekNextInt()
+    {
+        if (_count == 0)
+        {
+            // Next call to NextInt will trigger Isaac() and set _count = Size - 1,
+            // then return _results[Size - 1]. We need to compute that without side effects.
+            // Clone state, run Isaac, peek the value.
+            var tempResults = (int[])_results.Clone();
+            var tempMemory = (int[])_memory.Clone();
+            int tempAcc = _accumulator;
+            int tempLast = _lastResult;
+            int tempCounter = _counter;
+
+            // Run Isaac inline on temp state
+            tempLast += ++tempCounter;
+            for (int i = 0; i < Size; i++)
+            {
+                int x = tempMemory[i];
+                tempAcc = (i & 3) switch
+                {
+                    0 => tempAcc ^ (tempAcc << 13),
+                    1 => tempAcc ^ (int)((uint)tempAcc >> 6),
+                    2 => tempAcc ^ (tempAcc << 2),
+                    3 => tempAcc ^ (int)((uint)tempAcc >> 16),
+                    _ => tempAcc
+                };
+                tempAcc += tempMemory[(i + 128) & Mask];
+                int y = tempMemory[(int)((uint)x >> 2) & Mask] + tempAcc + tempLast;
+                tempMemory[i] = y;
+                tempLast = tempMemory[(int)((uint)y >> 10) & Mask] + x;
+                tempResults[i] = tempLast;
+            }
+
+            return tempResults[Size - 1];
+        }
+
+        return _results[_count - 1];
+    }
+
     private void Init()
     {
         Span<int> abcdefgh = stackalloc int[8];

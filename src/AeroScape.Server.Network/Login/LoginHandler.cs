@@ -192,8 +192,10 @@ public sealed class LoginHandler
             (int)(serverSeed >> 32), (int)serverSeed
         ];
 
-        var incomingIsaac = new IsaacRandom(isaacSeed);
-        var outgoingIsaac = new IsaacRandom(isaacSeed.Select(s => s + 50).ToArray());
+        // Client encrypts outgoing opcodes with seed+50, so server must decrypt with seed+50.
+        // Client decrypts incoming opcodes with base seed, so server must encrypt with base seed.
+        var incomingIsaac = new IsaacRandom(isaacSeed.Select(s => s + 50).ToArray());
+        var outgoingIsaac = new IsaacRandom(isaacSeed);
 
         // --- Step 5: Validate credentials (scoped — DbContext is scoped) ---
         await using var scope = _scopeFactory.CreateAsyncScope();
