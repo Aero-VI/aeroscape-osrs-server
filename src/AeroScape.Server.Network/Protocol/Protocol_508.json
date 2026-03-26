@@ -3,7 +3,7 @@
   "incoming": {
     "KeepAlive": { "opcode": 0, "size": 0 },
     "IdleLogout": { "opcode": 47, "size": 0 },
-    "FocusChanged": { "opcode": 3, "size": 1 },
+    "FocusChanged": { "opcode": 248, "size": 1 },
     "PublicChat": { "opcode": 222, "size": -1 },
     "Walk": { "opcode": 49, "size": -1 },
     "WalkOnCommand": { "opcode": 119, "size": -1 },
@@ -17,10 +17,9 @@
     "ButtonClick5": { "opcode": 232, "size": 6 },
     "ButtonClick6": { "opcode": 173, "size": 6 },
 
-    "EquipItem": { "opcode": 3, "size": -1 },
+    "EquipItem": { "opcode": 3, "size": 8 },
     "ItemOption1": { "opcode": 203, "size": 8 },
     "ItemOption1Alt": { "opcode": 152, "size": 8 },
-    "ItemOption2": { "opcode": 186, "size": 8 },
     "ItemSelect": { "opcode": 220, "size": 8 },
     "ItemSelectAlt": { "opcode": 134, "size": 8 },
     "DropItem": { "opcode": 211, "size": 8 },
@@ -31,8 +30,8 @@
 
     "ItemOnItem": { "opcode": 40, "size": -1 },
     "ItemOnObject": { "opcode": 224, "size": -1 },
-    "ItemOnNpc": { "opcode": 131, "size": 8 },
-    "ItemOnPlayer": { "opcode": 253, "size": 2 },
+    "ItemOnNpc": { "opcode": 131, "size": 7 },
+    "ItemOnPlayer": { "opcode": 117, "size": -1 },
 
     "NpcAttack": { "opcode": 123, "size": 2 },
     "NpcInteract1": { "opcode": 7, "size": 2 },
@@ -80,10 +79,10 @@
     "LongInput": { "opcode": 189, "size": 8 },
 
     "KickClanMember": { "opcode": 200, "size": 8 },
-    "TradeAccept": { "opcode": 253, "size": 2 },
+    "TradeAccept": { "opcode": 99, "size": 4 },
 
     "UpdateRequest": { "opcode": 22, "size": 4 },
-    "SettingsButton": { "opcode": 165, "size": 4 }
+    "SettingsButton": { "opcode": 247, "size": 4 }
   },
   "outgoing": {
     "PlayerUpdate": { "opcode": 81, "size": -2 },

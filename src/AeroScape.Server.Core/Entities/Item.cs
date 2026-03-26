@@ -154,6 +154,33 @@ public sealed class ItemContainer
         return total;
     }
 
+    /// <summary>Alias for GetAmount — used by skill services.</summary>
+    public int CountOf(int itemId) => GetAmount(itemId);
+
+    /// <summary>Gets the item at a given slot (alias for Get).</summary>
+    public Item? GetItem(int slot) => Get(slot);
+
+    /// <summary>
+    /// Removes an amount of an item by item ID (searches for the slot).
+    /// Returns true if successfully removed.
+    /// </summary>
+    public bool RemoveById(int itemId, int amount = 1)
+    {
+        int remaining = amount;
+        for (int i = 0; i < _items.Length && remaining > 0; i++)
+        {
+            if (_items[i] is { } item && item.Id == itemId)
+            {
+                int toRemove = Math.Min(remaining, item.Amount);
+                item.Amount -= toRemove;
+                remaining -= toRemove;
+                if (item.Amount <= 0)
+                    _items[i] = null;
+            }
+        }
+        return remaining == 0;
+    }
+
     public void Swap(int from, int to)
     {
         if (from >= 0 && from < _items.Length && to >= 0 && to < _items.Length)

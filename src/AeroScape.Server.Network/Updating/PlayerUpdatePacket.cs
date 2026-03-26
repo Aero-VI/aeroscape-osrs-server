@@ -202,7 +202,7 @@ public static class PlayerUpdatePacket
 
         if (flags >= 0x100)
         {
-            flags |= 0x40; // Extended flag marker
+            flags |= 0x10; // Extended flag marker (from legacy: maskData |= 0x10)
             block.WriteByte(flags & 0xFF);
             block.WriteByte(flags >> 8);
         }
@@ -259,18 +259,25 @@ public static class PlayerUpdatePacket
 
         if ((flags & FlagHit) != 0)
         {
-            block.WriteByte(player.HitDamage);
-            block.WriteByteA(player.HitType);
-            block.WriteByteC(player.Skills.GetLevel(3)); // current HP
-            block.WriteByte(player.Skills.GetLevelForExperience(player.Skills.GetExperience(3))); // max HP
+            // From legacy PlayerUpdateMasks.appendHit1:
+            // writeByteS(hitDiff1), writeByteS(hitType), writeByteS(hpRatio)
+            block.WriteByteS(player.HitDamage);
+            int hitType1 = player.HitDamage > 0 ? 1 : 0;
+            block.WriteByteS(hitType1);
+            // hpRatio = currentHP * 255 / maxHP (from legacy)
+            int maxHp = player.Skills.GetLevelForExperience(player.Skills.GetExperience(3));
+            int curHp = player.Skills.GetLevel(3);
+            int hpRatio = maxHp > 0 ? curHp * 255 / maxHp : 0;
+            block.WriteByteS(hpRatio);
         }
 
         if ((flags & FlagHit2) != 0)
         {
-            block.WriteByte(player.Hit2Damage);
-            block.WriteByteS(player.Hit2Type);
-            block.WriteByte(player.Skills.GetLevel(3));
-            block.WriteByteC(player.Skills.GetLevelForExperience(player.Skills.GetExperience(3)));
+            // From legacy PlayerUpdateMasks.appendHit2:
+            // writeByteS(hitDiff2), writeByteA(hitType)
+            block.WriteByteS(player.Hit2Damage);
+            int hitType2 = player.Hit2Damage > 0 ? 1 : 0;
+            block.WriteByteA(hitType2);
         }
     }
 

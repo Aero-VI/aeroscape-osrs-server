@@ -129,10 +129,17 @@ public static class NpcUpdatePacket
 
         if ((flags & FlagHit) != 0)
         {
-            block.WriteByteC(npc.HitDamage);
-            block.WriteByteS(npc.HitType);
-            block.WriteByteS(npc.CurrentHealth);
-            block.WriteByteC(npc.MaxHealth);
+            // From legacy NPCUpdateMasks.appendHit1:
+            // writeByte(hitDiff1), writeByte(hitType), writeByteS(hpRatio)
+            block.WriteByte(npc.HitDamage);
+            int hitType = npc.HitType; // 0=miss, 1=normal hit, 2=poison
+            if (hitType == 0 && npc.HitDamage > 0) hitType = 1;
+            block.WriteByte(hitType);
+            // HP ratio: getCurrentHP(current, max, 100) * 255 / 100
+            int hpRatio = npc.MaxHealth > 0
+                ? (int)Math.Round((double)npc.CurrentHealth / npc.MaxHealth * 100) * 255 / 100
+                : 0;
+            block.WriteByteS(hpRatio);
         }
 
         if ((flags & FlagGraphic) != 0)

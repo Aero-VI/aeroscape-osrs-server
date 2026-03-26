@@ -46,9 +46,40 @@ public sealed class Player
     public int PrayerIcon { get; set; } = -1;
     public int PrayerDrainRate { get; set; }
     
-    // Combat
+    // Combat (expanded from legacy PlayerCombat.java / PlayerNPCCombat.java)
     public bool AutoRetaliate { get; set; } = true;
     public int? FollowTargetIndex { get; set; }
+    public int CombatDelay { get; set; }
+    public int AttackDelay { get; set; } = 5;
+    public int AttackStyle { get; set; }    // 0=accurate, 1=strong, 2=block, 3=all-around
+    public int AttackEmote { get; set; } = 422;
+    public int SpecialAmount { get; set; } = 100;
+    public bool UsingSpecial { get; set; }
+    public int MagicDelay { get; set; }
+    public int FreezeDelay { get; set; }
+    public int ClickDelay { get; set; }
+    
+    // Equipment bonuses (from legacy Player.java)
+    public int[] EquipmentBonus { get; } = new int[13];
+
+    // Following (from legacy PlayerFollow.java)
+    public int FollowPlayerIndex { get; set; }
+    public bool FollowingPlayer { get; set; }
+
+    // Wilderness & PvP state
+    public bool IsDead { get; set; }
+    public int HeightLevel { get; set; }
+
+    // Skill states (fishing, mining, woodcutting, construction)
+    public bool IsFishing { get; set; }
+    public int FishTimer { get; set; }
+    
+    // Vengeance (from legacy)
+    public bool VengeanceActive { get; set; }
+    public long LastVengeanceTime { get; set; }
+    
+    // Barrows tracking (from legacy)
+    public bool[] Barrows { get; } = new bool[6];
     
     // Interface state
     public int OpenInterfaceId { get; set; } = -1;
@@ -145,5 +176,15 @@ public sealed class Player
         IsTeleporting = false;
         ChatText = null;
         ForceChat = null;
+    }
+
+    /// <summary>Per-tick decay for combat timers (from legacy process methods).</summary>
+    public void ProcessTimers()
+    {
+        if (CombatDelay > 0) CombatDelay--;
+        if (MagicDelay > 0) MagicDelay--;
+        if (FreezeDelay > 0) FreezeDelay--;
+        if (ClickDelay > 0) ClickDelay--;
+        if (FishTimer > 0) FishTimer--;
     }
 }

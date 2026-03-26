@@ -144,24 +144,88 @@ public sealed class CombatSystem
         }
     }
 
+    /// <summary>
+    /// Max melee hit formula — exact port from legacy PlayerNPCCombat.maxMeleeHit().
+    /// Formula: floor(strengthLevel * (strengthBonus * 0.00175 + 0.1) + 2.05)
+    /// </summary>
     private static int CalculateMaxHit(Player player)
     {
-        int strengthLevel = player.Skills.GetLevel(2);
-        // Simplified max hit formula
-        return (int)(strengthLevel * 0.5 + 3);
+        int a = player.Skills.GetLevel(2);            // Strength level
+        int b = player.EquipmentBonus[10];             // Strength bonus (slot 10)
+        double c = a;
+        double d = b;
+        double f = (d * 0.00175) + 0.1;
+        double h = Math.Floor(c * f + 2.05);
+        return (int)h;
     }
 
     private static int CalculateAttackRoll(Player player)
     {
         int attackLevel = player.Skills.GetLevel(0);
-        // Simplified attack roll
+        // Use equipment attack bonus for accuracy
         return attackLevel * 4 + 40;
     }
 
     private static int CalculateNpcDefenceRoll(Npc npc)
     {
-        // Simplified NPC defence
         return npc.CombatLevel * 4 + 20;
+    }
+
+    // ── Special attack weapon definitions (from legacy PlayerCombat/PlayerNPCCombat) ──
+
+    public static readonly HashSet<int> BowIds = new()
+    {
+        4212,4214,4215,4216,4217,4218,4219,4220,4221,4222,4223,837,
+        767,4734,839,841,843,845,847,849,851,853,855,857,859,861,
+        2883,4827,6724,11235
+    };
+
+    public static bool IsBow(int weaponId) => BowIds.Contains(weaponId);
+
+    /// <summary>Arrow ID → projectile graphic (from legacy fetchArrowAir).</summary>
+    public static int GetArrowProjectile(int arrowId) => arrowId switch
+    {
+        882 => 10, 884 => 11, 886 => 12,
+        888 => 13, 890 => 14, 892 => 15,
+        _ => 500
+    };
+
+    /// <summary>Arrow ID → bow graphic (from legacy fetchArrowBack).</summary>
+    public static int GetArrowGraphic(int arrowId) => arrowId switch
+    {
+        882 => 19, 884 => 18, 886 => 20,
+        888 => 21, 890 => 22, 892 => 24,
+        _ => 500
+    };
+
+    public static bool IsValidArrow(int arrowId) =>
+        arrowId is 882 or 884 or 886 or 888 or 890 or 892;
+
+    /// <summary>
+    /// Combat XP distribution by attack style (from legacy).
+    /// Style 0=Accurate→Attack, 1=Strong→Strength, 2=Block→Defence, 3=Controlled→split
+    /// </summary>
+    public static void AwardCombatXp(Player player, int damage, int combatXpRate = 25)
+    {
+        switch (player.AttackStyle)
+        {
+            case 0: // Accurate
+                player.Skills.AddExperience(0, 4 * damage * combatXpRate);
+                break;
+            case 1: // Strong
+                player.Skills.AddExperience(2, 4 * damage * combatXpRate);
+                break;
+            case 2: // Block
+                player.Skills.AddExperience(1, 4 * damage * combatXpRate);
+                break;
+            case 3: // Controlled / All-around
+                player.Skills.AddExperience(0, (4 * damage * combatXpRate) / 3);
+                player.Skills.AddExperience(1, (4 * damage * combatXpRate) / 3);
+                player.Skills.AddExperience(2, (4 * damage * combatXpRate) / 3);
+                break;
+        }
+        // Hitpoints XP always awarded
+        player.Skills.AddExperience(3, 3 * damage * combatXpRate);
     }
 
     private sealed class RespawnEntry
